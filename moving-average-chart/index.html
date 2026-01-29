@@ -52,33 +52,103 @@ const windowSelect = document.getElementById("windowSelect");
 
 let monthly = [];
 
+const statusEl = document.createElement("div");
+statusEl.style.cssText = "margin-top:6px;font-size:12px;background:#fff;padding:6px 10px;border:1px solid #ddd;border-radius:8px;display:none;";
+document.querySelector(".wrap").appendChild(statusEl);
+
+function status(msg) {
+  statusEl.textContent = msg;
+  statusEl.style.display = "block";
+}
+
 fileInput.addEventListener("change", async () => {
   const file = fileInput.files[0];
   if (!file) return;
 
-  const text = await file.text();
-  const rows = text.trim().split(/\r?\n/).map(r => r.split(","));
+  try {
+    const text = await file.text();
+    const rows = parseCSV(text);
 
-  monthly = rows
-    .map(r => {
-      const s = (r[0] || "").replace(/\D/g, "");
-      if (s.length !== 6) return null;
-      const y = +s.slice(0,4);
-      const m = +s.slice(4,6);
-      const v = parseFloat((r[1] || "").replace(/,/g,""));
-      if (!v) return null;
-      return {
-        date: new Date(Date.UTC(y, m-1, 1)),
-        value: v
-      };
-    })
-    .filter(Boolean)
-    .sort((a,b)=>a.date-b.date);
+    monthly = rows
+      .map(r => {
+        const yyyymm = (r[0] ?? "").toString().replace(/\D/g, "");
+        if (yyyymm.length !== 6) return null;
 
-  draw();
+        const y = Number(yyyymm.slice(0,4));
+        const m = Number(yyyymm.slice(4,6));
+        if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+
+        const v = toNumber(r[1]);
+        if (!Number.isFinite(v)) return null;
+
+        return { date: new Date(Date.UTC(y, m - 1, 1)), value: v };
+      })
+      .filter(Boolean)
+      .sort((a,b)=>a.date-b.date);
+
+    if (!monthly.length) {
+      status("No valid rows found. Expected Column A = YYYYMM, Column B = Value.");
+      Plotly.purge("chart");
+      return;
+    }
+
+    status(`Loaded ${monthly.length} months. Rendering…`);
+    draw();
+    setTimeout(() => (statusEl.style.display = "none"), 1500);
+
+  } catch (e) {
+    status("Error: " + (e?.message || String(e)));
+    Plotly.purge("chart");
+  }
 });
 
 windowSelect.addEventListener("change", draw);
+
+function toNumber(v) {
+  if (typeof v === "number") return v;
+  const s = String(v ?? "").trim();
+  if (!s) return NaN;
+  // remove £, spaces, thousands commas
+  const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+// Proper CSV parser (handles quotes + commas inside quotes)
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let cur = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
+    if (ch === '"') { inQuotes = !inQuotes; continue; }
+
+    if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
+
+    if ((ch === "\n" || ch === "\r") && !inQuotes) {
+      if (ch === "\r" && next === "\n") i++;
+      row.push(cur); cur = "";
+      if (row.some(c => String(c).trim() !== "")) rows.push(row);
+      row = [];
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  row.push(cur);
+  if (row.some(c => String(c).trim() !== "")) rows.push(row);
+
+  // Drop header row if it looks like one
+  if (rows.length && /month/i.test(rows[0][0] || "")) rows.shift();
+
+  return rows;
+}
 
 function trailingAvg(data, n) {
   return data.map((d,i)=>{
@@ -93,7 +163,7 @@ function trailingAvg(data, n) {
 function draw() {
   if (!monthly.length) return;
 
-  const n = +windowSelect.value;
+  const n = Number(windowSelect.value);
   const ma = trailingAvg(monthly, n);
 
   Plotly.newPlot("chart", [{
@@ -107,9 +177,6 @@ function draw() {
     margin: { l: 50, r: 10, t: 10, b: 40 },
     yaxis: { tickformat: ",.0f" },
     xaxis: { tickformat: "%Y-%m" }
-  }, { displayModeBar: false });
+  }, { displayModeBar: false, responsive: true });
 }
 </script>
-
-</body>
-</html>
