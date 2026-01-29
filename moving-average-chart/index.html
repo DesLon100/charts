@@ -24,10 +24,7 @@
     align-items: center;
   }
 
-  .file {
-    height: 40px;
-  }
-
+  input[type="file"] { height: 40px; background: #fff; }
   select {
     height: 40px;
     border-radius: 10px;
@@ -38,13 +35,25 @@
   }
 
   #chart { width: 100%; height: 360px; }
+
+  /* Debug/status box (white, so Gutenberg background can show through chart only) */
+  #status {
+    margin-top: 8px;
+    font-size: 12px;
+    background: #fff;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    display: none;
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 
 <body>
 <div class="wrap">
   <div class="controls">
-    <input class="file" type="file" id="fileInput" accept=".csv">
+    <input type="file" id="fileInput" accept=".csv">
     <select id="windowSelect">
       <option value="12">12-month avg</option>
       <option value="24">24-month avg</option>
@@ -53,15 +62,39 @@
   </div>
 
   <div id="chart"></div>
+  <div id="status"></div>
 </div>
 
 <script>
   const fileInput = document.getElementById("fileInput");
   const windowSelect = document.getElementById("windowSelect");
+  const statusEl = document.getElementById("status");
 
-  let monthlyCalendar = []; // continuous months, missing months filled with 0
+  function status(msg) {
+    statusEl.textContent = msg;
+    statusEl.style.display = "block";
+  }
+  function clearStatus() {
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
+  }
+
+  // Show any JS errors ON the page (no more guessing)
+  window.addEventListener("error", (e) => {
+    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+  });
+
+  if (typeof Plotly === "undefined") {
+    status("Plotly failed to load. Check your internet or blocked scripts.");
+  } else {
+    status("Page loaded. Upload a CSV to render the chart.");
+    setTimeout(clearStatus, 1200);
+  }
+
+  let monthlyCalendar = []; // continuous calendar months, missing months filled with 0
 
   fileInput.addEventListener("change", async () => {
+    clearStatus();
     const file = fileInput.files?.[0];
     if (!file) return;
 
@@ -69,25 +102,31 @@
       const text = await file.text();
       const rows = parseCSV(text);
 
-      monthlyCalendar = buildMonthlyCalendar(rows); // aggregated + filled with 0
+      monthlyCalendar = buildMonthlyCalendar(rows);
 
       if (!monthlyCalendar.length) {
         Plotly.purge("chart");
-        alert("No valid rows found. Expect CSV with Column A=YYYYMM and Column B=Value.");
+        status("No valid rows found.\nExpected CSV: Column A=YYYYMM, Column B=Value.");
         return;
       }
 
+      status(`Loaded ${rows.length} rows → built ${monthlyCalendar.length} calendar months (missing months = 0).\nRendering…`);
       draw();
+      setTimeout(clearStatus, 1500);
+
     } catch (err) {
       console.error(err);
       Plotly.purge("chart");
-      alert("Error reading CSV: " + (err?.message || String(err)));
+      status("Error reading CSV:\n" + (err?.message || String(err)));
     }
   });
 
-  windowSelect.addEventListener("change", draw);
+  windowSelect.addEventListener("change", () => {
+    if (!monthlyCalendar.length) return;
+    draw();
+  });
 
-  // --- CSV parsing (robust: handles quotes, commas inside quotes) ---
+  // --- Robust CSV parser (handles quotes and commas inside quotes) ---
   function parseCSV(text) {
     const rows = [];
     let row = [];
@@ -149,19 +188,19 @@
     return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
   }
 
-  // 1) aggregate all rows per month to a monthly mean
-  // 2) build continuous calendar months min->max, fill missing months with 0
+  // 1) aggregate multiple rows per month → mean
+  // 2) create continuous calendar months min→max; missing months → 0
   function buildMonthlyCalendar(rows) {
     const byMonth = new Map(); // key YYYY-MM -> {sum, n, date}
 
     for (const r of rows) {
       if (!Array.isArray(r) || r.length < 2) continue;
 
-      const d = parseYYYYMM(r[0]);  // Column A
-      const v = toNumber(r[1]);     // Column B
+      const d = parseYYYYMM(r[0]); // Column A
+      const v = toNumber(r[1]);    // Column B
       if (!d || !isFinite(v)) continue;
 
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
       const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
       cur.sum += v;
       cur.n += 1;
@@ -176,47 +215,43 @@
 
     const out = [];
     for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
       const agg = byMonth.get(key);
-      const value = agg ? (agg.sum / agg.n) : 0; // missing month => 0
+      const value = agg ? (agg.sum / agg.n) : 0; // missing month counts as 0
       out.push({ date: new Date(d), value });
     }
     return out;
   }
 
-  // strict calendar MA: always N months, always divide by N, starts only after full window
+  // Strict calendar rolling avg:
+  // - always N months
+  // - divide by N
+  // - first point appears only after full window
   function trailingAvgStrictCalendar(data, n) {
     const out = new Array(data.length);
     let runningSum = 0;
 
     for (let i = 0; i < data.length; i++) {
       runningSum += data[i].value;
+      if (i >= n) runningSum -= data[i - n].value;
 
-      if (i >= n) {
-        runningSum -= data[i - n].value;
-      }
-
-      if (i < n - 1) {
-        out[i] = { date: data[i].date, value: null };
-      } else {
-        out[i] = { date: data[i].date, value: runningSum / n };
-      }
+      out[i] = {
+        date: data[i].date,
+        value: (i < n - 1) ? null : (runningSum / n)
+      };
     }
     return out;
   }
 
   function draw() {
     if (!monthlyCalendar.length) return;
-    if (typeof Plotly === "undefined") return;
 
     const n = Number(windowSelect.value);
     const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
 
-    const x = ma.map(d => d.date);
-    const y = ma.map(d => d.value);
-
     Plotly.newPlot("chart", [{
-      x, y,
+      x: ma.map(d => d.date),
+      y: ma.map(d => d.value),
       type: "scatter",
       mode: "lines",
       line: { width: 2 },
@@ -229,15 +264,15 @@
       yaxis: {
         title: "GBP",
         tickprefix: "£",
-        tickformat: "~s",      // k / M formatting
+        tickformat: "~s",   // k / M formatting
         zeroline: false
       },
 
       xaxis: {
         type: "date",
-        tickformat: "%Y",      // year only
-        dtick: "M60",          // every 5 years
-        tick0: "1975-01-01",   // anchor at a Jan
+        tickformat: "%Y",    // year only (no -01)
+        dtick: "M60",        // 5-year ticks
+        tick0: "1975-01-01",
         hoverformat: "%Y-%m"
       }
     }, {
