@@ -8,32 +8,43 @@
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
 <style>
-body {
-  margin: 0;
-  padding: 14px;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  background: transparent;
-}
-.wrap { max-width: 645px; }
-.controls { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-button, select {
-  height: 40px;
-  border-radius: 10px;
-  border: 1px solid #ccc;
-  background: #fff;
-  padding: 0 12px;
-  font-size: 14px;
-}
-#chart { width: 100%; height: 360px; }
-.hint { font-size: 12px; color: #666; margin-top: 6px; }
+  body {
+    margin: 0;
+    padding: 14px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: transparent;
+  }
+  .wrap { max-width: 645px; }
+
+  .controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .file {
+    height: 40px;
+  }
+
+  select {
+    height: 40px;
+    border-radius: 10px;
+    border: 1px solid #ccc;
+    background: #fff;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  #chart { width: 100%; height: 360px; }
 </style>
 </head>
 
 <body>
 <div class="wrap">
-
   <div class="controls">
-    <input type="file" id="fileInput" accept=".csv">
+    <input class="file" type="file" id="fileInput" accept=".csv">
     <select id="windowSelect">
       <option value="12">12-month avg</option>
       <option value="24">24-month avg</option>
@@ -42,211 +53,199 @@ button, select {
   </div>
 
   <div id="chart"></div>
- 
-
 </div>
 
 <script>
-const fileInput = document.getElementById("fileInput");
-const windowSelect = document.getElementById("windowSelect");
+  const fileInput = document.getElementById("fileInput");
+  const windowSelect = document.getElementById("windowSelect");
 
-let monthly = []; // continuous monthly calendar, missing months filled with 0
+  let monthlyCalendar = []; // continuous months, missing months filled with 0
 
-const statusEl = document.createElement("div");
-statusEl.style.cssText = "margin-top:6px;font-size:12px;background:#fff;padding:6px 10px;border:1px solid #ddd;border-radius:8px;display:none;";
-document.querySelector(".wrap").appendChild(statusEl);
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
 
-function status(msg) {
-  statusEl.textContent = msg;
-  statusEl.style.display = "block";
-}
+    try {
+      const text = await file.text();
+      const rows = parseCSV(text);
 
-fileInput.addEventListener("change", async () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+      monthlyCalendar = buildMonthlyCalendar(rows); // aggregated + filled with 0
 
-  try {
-    const text = await file.text();
-    const rows = parseCSV(text);
+      if (!monthlyCalendar.length) {
+        Plotly.purge("chart");
+        alert("No valid rows found. Expect CSV with Column A=YYYYMM and Column B=Value.");
+        return;
+      }
 
-    // ✅ NEW: Build continuous calendar monthly series from rows:
-    // - Aggregate multiple rows per month -> mean
-    // - Fill missing months -> 0
-    monthly = buildMonthlyCalendar(rows);
-
-    if (!monthly.length) {
-      status("No valid rows found. Expected Column A = YYYYMM, Column B = Value.");
+      draw();
+    } catch (err) {
+      console.error(err);
       Plotly.purge("chart");
-      return;
+      alert("Error reading CSV: " + (err?.message || String(err)));
     }
-
-    status(`Built ${monthly.length} calendar months (missing months = 0). Rendering…`);
-    draw();
-    setTimeout(() => (statusEl.style.display = "none"), 1500);
-
-  } catch (e) {
-    status("Error: " + (e?.message || String(e)));
-    Plotly.purge("chart");
-  }
-});
-
-windowSelect.addEventListener("change", draw);
-
-function toNumber(v) {
-  if (typeof v === "number") return v;
-  const s = String(v ?? "").trim();
-  if (!s) return NaN;
-  // remove £, spaces, thousands commas
-  const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : NaN;
-}
-
-// Proper CSV parser (handles quotes + commas inside quotes)
-function parseCSV(text) {
-  const rows = [];
-  let row = [];
-  let cur = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const next = text[i + 1];
-
-    if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
-    if (ch === '"') { inQuotes = !inQuotes; continue; }
-
-    if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
-
-    if ((ch === "\n" || ch === "\r") && !inQuotes) {
-      if (ch === "\r" && next === "\n") i++;
-      row.push(cur); cur = "";
-      if (row.some(c => String(c).trim() !== "")) rows.push(row);
-      row = [];
-      continue;
-    }
-
-    cur += ch;
-  }
-
-  row.push(cur);
-  if (row.some(c => String(c).trim() !== "")) rows.push(row);
-
-  // Drop header row if it looks like one
-  if (rows.length && /month/i.test(rows[0][0] || "")) rows.shift();
-
-  return rows;
-}
-
-// ✅ NEW: parse YYYYMM (Column A)
-function parseYYYYMM(v) {
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const digits = s.replace(/\D/g, "");
-  if (digits.length < 6) return null;
-
-  const y = Number(digits.slice(0, 4));
-  const m = Number(digits.slice(4, 6));
-  if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
-
-  return new Date(Date.UTC(y, m - 1, 1));
-}
-
-// ✅ NEW: add months in UTC
-function addMonthsUTC(dateUTC, n) {
-  return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
-}
-
-// ✅ NEW: build continuous monthly calendar with missing months = 0
-function buildMonthlyCalendar(rows) {
-  // First aggregate all rows per month into a mean monthly value
-  const byMonth = new Map(); // key YYYY-MM -> {sum, n, date}
-
-  for (const r of rows) {
-    if (!Array.isArray(r) || r.length < 2) continue;
-
-    const d = parseYYYYMM(r[0]);   // Column A
-    const v = toNumber(r[1]);      // Column B
-
-    if (!d || !isFinite(v)) continue;
-
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
-    cur.sum += v;
-    cur.n += 1;
-    byMonth.set(key, cur);
-  }
-
-  if (byMonth.size === 0) return [];
-
-  // Determine min/max months from the aggregated keys
-  const monthDates = Array.from(byMonth.values())
-    .map(x => x.date)
-    .sort((a, b) => a - b);
-
-  const minMonth = monthDates[0];
-  const maxMonth = monthDates[monthDates.length - 1];
-
-  // Build continuous calendar months min -> max
-  const out = [];
-  for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    const agg = byMonth.get(key);
-
-    // IMPORTANT: Missing month counts as zero
-    const value = agg ? (agg.sum / agg.n) : 0;
-
-    out.push({ date: new Date(d), value });
-  }
-
-  return out;
-}
-
-// ✅ NEW: strict calendar trailing average
-// - first point appears only once full window exists (e.g. Jan 1976 if start Jan 1975)
-// - always divides by N (missing months already 0)
-function trailingAvgStrictCalendar(data, n) {
-  return data.map((d, i) => {
-    if (i < n - 1) return { date: d.date, value: null };
-    let sum = 0;
-    for (let j = i - n + 1; j <= i; j++) sum += data[j].value;
-    return { date: d.date, value: sum / n };
   });
-}
 
-function draw() {
-  if (!monthly.length) return;
+  windowSelect.addEventListener("change", draw);
 
-  const n = Number(windowSelect.value);
+  // --- CSV parsing (robust: handles quotes, commas inside quotes) ---
+  function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cur = "";
+    let inQuotes = false;
 
-  // ✅ CHANGED: use strict calendar MA
-  const ma = trailingAvgStrictCalendar(monthly, n);
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
 
-  Plotly.newPlot("chart", [{
-    x: ma.map(d => d.date),
-    y: ma.map(d => d.value),
-    mode: "lines",
-    line: { width: 2 }
-  }], {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
+      if (ch === '"') { inQuotes = !inQuotes; continue; }
 
-    margin: { l: 70, r: 10, t: 10, b: 40 },
+      if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
 
-    yaxis: {
-      title: "GBP",
-      tickformat: "~s",    // 200k, 1.2M, etc.
-      tickprefix: "£",
-      zeroline: false
-    },
+      if ((ch === "\n" || ch === "\r") && !inQuotes) {
+        if (ch === "\r" && next === "\n") i++;
+        row.push(cur); cur = "";
+        if (row.some(c => String(c).trim() !== "")) rows.push(row);
+        row = [];
+        continue;
+      }
 
-    xaxis: {
-      tickformat: "%Y",    // year only
-      dtick: "M60",        // 5-year ticks
-      tick0: "1975-01-01", // anchor (any Jan is fine)
-      showgrid: true
+      cur += ch;
     }
 
-  }, { displayModeBar: false, responsive: true });
+    row.push(cur);
+    if (row.some(c => String(c).trim() !== "")) rows.push(row);
 
+    // Drop header if it looks like one
+    if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
+
+    return rows;
+  }
+
+  function toNumber(v) {
+    if (typeof v === "number") return v;
+    const s = String(v ?? "").trim();
+    if (!s) return NaN;
+    const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function parseYYYYMM(v) {
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    const digits = s.replace(/\D/g, "");
+    if (digits.length < 6) return null;
+
+    const y = Number(digits.slice(0, 4));
+    const m = Number(digits.slice(4, 6));
+    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+
+    return new Date(Date.UTC(y, m - 1, 1));
+  }
+
+  function addMonthsUTC(dateUTC, n) {
+    return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
+  }
+
+  // 1) aggregate all rows per month to a monthly mean
+  // 2) build continuous calendar months min->max, fill missing months with 0
+  function buildMonthlyCalendar(rows) {
+    const byMonth = new Map(); // key YYYY-MM -> {sum, n, date}
+
+    for (const r of rows) {
+      if (!Array.isArray(r) || r.length < 2) continue;
+
+      const d = parseYYYYMM(r[0]);  // Column A
+      const v = toNumber(r[1]);     // Column B
+      if (!d || !isFinite(v)) continue;
+
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
+      cur.sum += v;
+      cur.n += 1;
+      byMonth.set(key, cur);
+    }
+
+    if (byMonth.size === 0) return [];
+
+    const monthDates = Array.from(byMonth.values()).map(x => x.date).sort((a,b) => a - b);
+    const minMonth = monthDates[0];
+    const maxMonth = monthDates[monthDates.length - 1];
+
+    const out = [];
+    for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const agg = byMonth.get(key);
+      const value = agg ? (agg.sum / agg.n) : 0; // missing month => 0
+      out.push({ date: new Date(d), value });
+    }
+    return out;
+  }
+
+  // strict calendar MA: always N months, always divide by N, starts only after full window
+  function trailingAvgStrictCalendar(data, n) {
+    const out = new Array(data.length);
+    let runningSum = 0;
+
+    for (let i = 0; i < data.length; i++) {
+      runningSum += data[i].value;
+
+      if (i >= n) {
+        runningSum -= data[i - n].value;
+      }
+
+      if (i < n - 1) {
+        out[i] = { date: data[i].date, value: null };
+      } else {
+        out[i] = { date: data[i].date, value: runningSum / n };
+      }
+    }
+    return out;
+  }
+
+  function draw() {
+    if (!monthlyCalendar.length) return;
+    if (typeof Plotly === "undefined") return;
+
+    const n = Number(windowSelect.value);
+    const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
+
+    const x = ma.map(d => d.date);
+    const y = ma.map(d => d.value);
+
+    Plotly.newPlot("chart", [{
+      x, y,
+      type: "scatter",
+      mode: "lines",
+      line: { width: 2 },
+      name: `${n}-month avg`
+    }], {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 75, r: 10, t: 10, b: 45 },
+
+      yaxis: {
+        title: "GBP",
+        tickprefix: "£",
+        tickformat: "~s",      // k / M formatting
+        zeroline: false
+      },
+
+      xaxis: {
+        type: "date",
+        tickformat: "%Y",      // year only
+        dtick: "M60",          // every 5 years
+        tick0: "1975-01-01",   // anchor at a Jan
+        hoverformat: "%Y-%m"
+      }
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+  }
 </script>
+
+</body>
+</html>
