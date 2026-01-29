@@ -42,7 +42,7 @@ button, select {
   </div>
 
   <div id="chart"></div>
-  <div class="hint">CSV format: Column A = YYYYMM, Column B = Value</div>
+ 
 
 </div>
 
@@ -222,34 +222,31 @@ function draw() {
   // ✅ CHANGED: use strict calendar MA
   const ma = trailingAvgStrictCalendar(monthly, n);
 
- Plotly.newPlot("chart", [{
-  x: ma.map(d => d.date),
-  y: ma.map(d => d.value),
-  mode: "lines",
-  line: { width: 2 }
-}], {
-  paper_bgcolor: "rgba(0,0,0,0)",
-  plot_bgcolor: "rgba(0,0,0,0)",
+  Plotly.newPlot("chart", [{
+    x: ma.map(d => d.date),
+    y: ma.map(d => d.value),
+    mode: "lines",
+    line: { width: 2 }
+  }], {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
 
-  margin: { l: 70, r: 10, t: 10, b: 40 },
+    margin: { l: 70, r: 10, t: 10, b: 40 },
 
-yaxis: {
-  title: "GBP",
-  tickformat: "~s",
-  tickprefix: "£",
-  zeroline: false
-},
+    yaxis: {
+      title: "GBP",
+      tickformat: "~s",    // 200k, 1.2M, etc.
+      tickprefix: "£",
+      zeroline: false
+    },
 
-  xaxis: {
-    tickformat: "%Y",
-    dtick: "M60",          // 60 months = 5 years
-    tick0: "1975-01-01",   // anchor (can be any Jan)
-    showgrid: true
-  }
+    xaxis: {
+      tickformat: "%Y",    // year only
+      dtick: "M60",        // 5-year ticks
+      tick0: "1975-01-01", // anchor (any Jan is fine)
+      showgrid: true
+    }
 
-}, {
-  displayModeBar: false,
-  responsive: true
-});
+  }, { displayModeBar: false, responsive: true });
 
 </script>
