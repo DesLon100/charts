@@ -222,17 +222,34 @@ function draw() {
   // ✅ CHANGED: use strict calendar MA
   const ma = trailingAvgStrictCalendar(monthly, n);
 
-  Plotly.newPlot("chart", [{
-    x: ma.map(d => d.date),
-    y: ma.map(d => d.value),
-    mode: "lines",
-    line: { width: 2 }
-  }], {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
-    margin: { l: 50, r: 10, t: 10, b: 40 },
-    yaxis: { tickformat: ",.0f" },
-    xaxis: { tickformat: "%Y-%m" }
-  }, { displayModeBar: false, responsive: true });
-}
+ Plotly.newPlot("chart", [{
+  x: ma.map(d => d.date),
+  y: ma.map(d => d.value),
+  mode: "lines",
+  line: { width: 2 }
+}], {
+  paper_bgcolor: "rgba(0,0,0,0)",
+  plot_bgcolor: "rgba(0,0,0,0)",
+
+  margin: { l: 70, r: 10, t: 10, b: 40 },
+
+yaxis: {
+  title: "GBP",
+  tickformat: "~s",
+  tickprefix: "£",
+  zeroline: false
+},
+
+  xaxis: {
+    tickformat: "%Y",
+    dtick: "M60",          // 60 months = 5 years
+    tick0: "1975-01-01",   // anchor (can be any Jan)
+    showgrid: true
+  }
+
+}, {
+  displayModeBar: false,
+  responsive: true
+});
+
 </script>
