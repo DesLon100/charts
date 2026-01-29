@@ -50,7 +50,7 @@ button, select {
 const fileInput = document.getElementById("fileInput");
 const windowSelect = document.getElementById("windowSelect");
 
-let monthly = [];
+let monthly = []; // continuous monthly calendar, missing months filled with 0
 
 const statusEl = document.createElement("div");
 statusEl.style.cssText = "margin-top:6px;font-size:12px;background:#fff;padding:6px 10px;border:1px solid #ddd;border-radius:8px;display:none;";
@@ -69,22 +69,10 @@ fileInput.addEventListener("change", async () => {
     const text = await file.text();
     const rows = parseCSV(text);
 
-    monthly = rows
-      .map(r => {
-        const yyyymm = (r[0] ?? "").toString().replace(/\D/g, "");
-        if (yyyymm.length !== 6) return null;
-
-        const y = Number(yyyymm.slice(0,4));
-        const m = Number(yyyymm.slice(4,6));
-        if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
-
-        const v = toNumber(r[1]);
-        if (!Number.isFinite(v)) return null;
-
-        return { date: new Date(Date.UTC(y, m - 1, 1)), value: v };
-      })
-      .filter(Boolean)
-      .sort((a,b)=>a.date-b.date);
+    // ✅ NEW: Build continuous calendar monthly series from rows:
+    // - Aggregate multiple rows per month -> mean
+    // - Fill missing months -> 0
+    monthly = buildMonthlyCalendar(rows);
 
     if (!monthly.length) {
       status("No valid rows found. Expected Column A = YYYYMM, Column B = Value.");
@@ -92,7 +80,7 @@ fileInput.addEventListener("change", async () => {
       return;
     }
 
-    status(`Loaded ${monthly.length} months. Rendering…`);
+    status(`Built ${monthly.length} calendar months (missing months = 0). Rendering…`);
     draw();
     setTimeout(() => (statusEl.style.display = "none"), 1500);
 
@@ -150,13 +138,79 @@ function parseCSV(text) {
   return rows;
 }
 
-function trailingAvg(data, n) {
-  return data.map((d,i)=>{
-    const slice = data.slice(Math.max(0,i-n+1), i+1);
-    return {
-      date: d.date,
-      value: slice.reduce((s,x)=>s+x.value,0)/slice.length
-    };
+// ✅ NEW: parse YYYYMM (Column A)
+function parseYYYYMM(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 6) return null;
+
+  const y = Number(digits.slice(0, 4));
+  const m = Number(digits.slice(4, 6));
+  if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+
+  return new Date(Date.UTC(y, m - 1, 1));
+}
+
+// ✅ NEW: add months in UTC
+function addMonthsUTC(dateUTC, n) {
+  return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
+}
+
+// ✅ NEW: build continuous monthly calendar with missing months = 0
+function buildMonthlyCalendar(rows) {
+  // First aggregate all rows per month into a mean monthly value
+  const byMonth = new Map(); // key YYYY-MM -> {sum, n, date}
+
+  for (const r of rows) {
+    if (!Array.isArray(r) || r.length < 2) continue;
+
+    const d = parseYYYYMM(r[0]);   // Column A
+    const v = toNumber(r[1]);      // Column B
+
+    if (!d || !isFinite(v)) continue;
+
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
+    cur.sum += v;
+    cur.n += 1;
+    byMonth.set(key, cur);
+  }
+
+  if (byMonth.size === 0) return [];
+
+  // Determine min/max months from the aggregated keys
+  const monthDates = Array.from(byMonth.values())
+    .map(x => x.date)
+    .sort((a, b) => a - b);
+
+  const minMonth = monthDates[0];
+  const maxMonth = monthDates[monthDates.length - 1];
+
+  // Build continuous calendar months min -> max
+  const out = [];
+  for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    const agg = byMonth.get(key);
+
+    // IMPORTANT: Missing month counts as zero
+    const value = agg ? (agg.sum / agg.n) : 0;
+
+    out.push({ date: new Date(d), value });
+  }
+
+  return out;
+}
+
+// ✅ NEW: strict calendar trailing average
+// - first point appears only once full window exists (e.g. Jan 1976 if start Jan 1975)
+// - always divides by N (missing months already 0)
+function trailingAvgStrictCalendar(data, n) {
+  return data.map((d, i) => {
+    if (i < n - 1) return { date: d.date, value: null };
+    let sum = 0;
+    for (let j = i - n + 1; j <= i; j++) sum += data[j].value;
+    return { date: d.date, value: sum / n };
   });
 }
 
@@ -164,11 +218,13 @@ function draw() {
   if (!monthly.length) return;
 
   const n = Number(windowSelect.value);
-  const ma = trailingAvg(monthly, n);
+
+  // ✅ CHANGED: use strict calendar MA
+  const ma = trailingAvgStrictCalendar(monthly, n);
 
   Plotly.newPlot("chart", [{
-    x: ma.map(d=>d.date),
-    y: ma.map(d=>d.value),
+    x: ma.map(d => d.date),
+    y: ma.map(d => d.value),
     mode: "lines",
     line: { width: 2 }
   }], {
