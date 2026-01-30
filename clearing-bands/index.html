@@ -26,7 +26,7 @@
 
   input[type="file"] { height: 40px; background: #fff; }
 
-  #chart { width: 100%; height: 380px; }
+  #chart { width: 100%; height: 410px; }
 
   #status {
     margin-top: 8px;
@@ -64,7 +64,7 @@
     statusEl.style.display = "none";
   }
 
-  // Show JS errors on-page so failures aren't mysterious
+  // Show JS errors on-page (so it's never mysterious)
   window.addEventListener("error", (e) => {
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
   });
@@ -76,9 +76,11 @@
     setTimeout(clearStatus, 1200);
   }
 
-let monthlyCalendar = []; // continuous months, missing months = 0
-const FLOOR = 100;        // display floor for log scale (GBP)
-
+  // We keep TWO monthly objects:
+  // - monthlyCalendar: continuous months, missing months = 0 (for time base)
+  // - monthlyCounts:   continuous months, count of rows in that month (liquidity indicator)
+  let monthlyCalendar = []; // [{date, value}]
+  let monthlyCounts   = []; // [{date, count}]
 
   fileInput.addEventListener("change", async () => {
     clearStatus();
@@ -89,7 +91,9 @@ const FLOOR = 100;        // display floor for log scale (GBP)
       const text = await file.text();
       const rows = parseCSV(text);
 
-      monthlyCalendar = buildMonthlyCalendar(rows);
+      const built = buildMonthlyCalendarAndCounts(rows);
+      monthlyCalendar = built.monthly;
+      monthlyCounts   = built.counts;
 
       if (!monthlyCalendar.length) {
         Plotly.purge("chart");
@@ -97,14 +101,14 @@ const FLOOR = 100;        // display floor for log scale (GBP)
         return;
       }
 
-      const series = computeClearingBands(monthlyCalendar, 48);
-
+      const series = computeClearingBands_PositiveOnly(monthlyCalendar, 48);
       status(
-        `Loaded ${rows.length} rows → built ${monthlyCalendar.length} calendar months (missing months=0)\n` +
-        `Computed 48-month rolling clearing levels.\nRendering…`
+        `Loaded ${rows.length} rows\n` +
+        `Built ${monthlyCalendar.length} calendar months (missing months=0)\n` +
+        `Computed 48-month rolling clearing levels on positive months only.\nRendering…`
       );
 
-      draw(series);
+      draw(series, monthlyCounts);
       setTimeout(clearStatus, 1500);
 
     } catch (err) {
@@ -175,9 +179,11 @@ const FLOOR = 100;        // display floor for log scale (GBP)
     return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
   }
 
-  // Aggregate rows per month -> mean; fill missing months -> 0
-  function buildMonthlyCalendar(rows) {
-    const byMonth = new Map(); // key YYYY-MM -> {sum,n,date}
+  // Build:
+  // - monthly mean value per month (missing months -> 0)
+  // - monthly count of rows per month (missing months -> 0)
+  function buildMonthlyCalendarAndCounts(rows) {
+    const byMonth = new Map(); // key YYYY-MM -> {sum,n,date,count}
 
     for (const r of rows) {
       if (!Array.isArray(r) || r.length < 2) continue;
@@ -187,30 +193,37 @@ const FLOOR = 100;        // display floor for log scale (GBP)
       if (!d || !isFinite(v)) continue;
 
       const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
-      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
+      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d, count: 0 };
       cur.sum += v;
       cur.n += 1;
+      cur.count += 1;
       byMonth.set(key, cur);
     }
 
-    if (byMonth.size === 0) return [];
+    if (byMonth.size === 0) return { monthly: [], counts: [] };
 
     const monthDates = Array.from(byMonth.values()).map(x => x.date).sort((a,b) => a - b);
     const minMonth = monthDates[0];
     const maxMonth = monthDates[monthDates.length - 1];
 
-    const out = [];
+    const monthly = [];
+    const counts  = [];
+
     for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
       const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
       const agg = byMonth.get(key);
-      const value = agg ? (agg.sum / agg.n) : 0; // missing month counts as 0
-      out.push({ date: new Date(d), value });
+
+      const value = agg ? (agg.sum / agg.n) : 0;    // missing month => 0
+      const count = agg ? agg.count : 0;            // missing month => 0 trades
+
+      monthly.push({ date: new Date(d), value });
+      counts.push({ date: new Date(d), count });
     }
-    return out;
+
+    return { monthly, counts };
   }
 
-  // Quantile helper (ascending quantile q in [0,1])
-  // Uses linear interpolation between points.
+  // Quantile helper (ascending)
   function quantile(sortedAsc, q) {
     const n = sortedAsc.length;
     if (n === 0) return NaN;
@@ -224,77 +237,108 @@ const FLOOR = 100;        // display floor for log scale (GBP)
   }
 
   // "p% clearing" = threshold T such that p% of observations are >= T
-  // That equals ascending quantile at q = 1 - p.
+  // Equivalent to ascending quantile at q = 1 - p
   function clearingThreshold(values, p) {
     const asc = values.slice().sort((a,b) => a - b);
     return quantile(asc, 1 - p);
   }
 
-  function computeClearingBands(monthly, windowMonths) {
+  // ✅ Option 4: clearing bands computed on POSITIVE months only (no floor, clean log scale)
+  function computeClearingBands_PositiveOnly(monthly, windowMonths) {
     const dates = [];
     const c70 = [];
     const c50 = [];
     const c30 = [];
 
-    const FLOOR = 100; // ✅ display floor for log scale
-
     for (let i = 0; i < monthly.length; i++) {
+      dates.push(monthly[i].date);
+
       if (i < windowMonths - 1) {
-        dates.push(monthly[i].date);
         c70.push(null); c50.push(null); c30.push(null);
         continue;
       }
 
-      const window = monthly.slice(i - windowMonths + 1, i + 1).map(d => d.value);
+      const window = monthly
+        .slice(i - windowMonths + 1, i + 1)
+        .map(d => d.value)
+        .filter(v => v > 0); // exclude no-sale months
+
+      if (window.length === 0) {
+        c70.push(null); c50.push(null); c30.push(null);
+        continue;
+      }
 
       const t70 = clearingThreshold(window, 0.70);
       const t50 = clearingThreshold(window, 0.50);
       const t30 = clearingThreshold(window, 0.30);
 
-      dates.push(monthly[i].date);
-
-      // ✅ Option A: floor values for display on log scale (while still using zeros in calc)
-      c70.push(Math.max(t70, FLOOR));
-      c50.push(Math.max(t50, FLOOR));
-      c30.push(Math.max(t30, FLOOR));
+      c70.push(t70 > 0 ? t70 : null);
+      c50.push(t50 > 0 ? t50 : null);
+      c30.push(t30 > 0 ? t30 : null);
     }
 
     return { dates, c70, c50, c30, windowMonths };
   }
 
-  function draw(series) {
+  function draw(series, counts) {
     const { dates, c70, c50, c30 } = series;
 
-    // Shaded bands via fill='tonexty':
-    // 70 line (base), then 50 filled to 70, then 30 filled to 50
+    // Liquidity strip: row counts per month, drawn as a thin bar series on yaxis2
+    const countX = counts.map(d => d.date);
+    const countY = counts.map(d => d.count);
+
     const traces = [
-      { x: dates, y: c70, type: "scatter", mode: "lines", name: "70% clearing", line: { width: 1.5 } },
-      { x: dates, y: c50, type: "scatter", mode: "lines", name: "50% clearing", fill: "tonexty", line: { width: 1.5 } },
-      { x: dates, y: c30, type: "scatter", mode: "lines", name: "30% clearing", fill: "tonexty", line: { width: 1.5 } }
+      // Clearing lines and shaded bands (log axis)
+      { x: dates, y: c70, type: "scatter", mode: "lines", name: "70% clearing", line: { width: 1.5 }, yaxis: "y" },
+      { x: dates, y: c50, type: "scatter", mode: "lines", name: "50% clearing", fill: "tonexty", line: { width: 1.5 }, yaxis: "y" },
+      { x: dates, y: c30, type: "scatter", mode: "lines", name: "30% clearing", fill: "tonexty", line: { width: 1.5 }, yaxis: "y" },
+
+      // Liquidity bars (linear counts axis, small strip at bottom)
+      {
+        x: countX,
+        y: countY,
+        type: "bar",
+        name: "Monthly sales count",
+        yaxis: "y2",
+        opacity: 0.35
+      }
     ];
 
     Plotly.newPlot("chart", traces, {
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      margin: { l: 75, r: 10, t: 10, b: 45 },
+      margin: { l: 75, r: 10, t: 10, b: 55 },
 
+      // Main price axis (log)
       yaxis: {
         title: "GBP (log scale)",
         type: "log",
         tickprefix: "£",
         tickformat: "~s",
-        zeroline: false
+        zeroline: false,
+        domain: [0.18, 1.0] // leave space for liquidity strip
+      },
+
+      // Liquidity axis (counts), small strip at bottom
+      yaxis2: {
+        title: "Sales",
+        type: "linear",
+        rangemode: "tozero",
+        domain: [0.0, 0.14],
+        showgrid: false,
+        zeroline: false,
+        fixedrange: true
       },
 
       xaxis: {
         type: "date",
         tickformat: "%Y",
-        dtick: "M60",          // 5-year ticks
+        dtick: "M60",
         tick0: "1975-01-01",
         hoverformat: "%Y-%m"
       },
 
-      legend: { orientation: "h", x: 0, y: -0.22 }
+      legend: { orientation: "h", x: 0, y: -0.25 }
     }, {
       displayModeBar: false,
       responsive: true
