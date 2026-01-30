@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly Moving Average (Compare 2 Datasets)</title>
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+  body{
+    margin:0;
+    padding:14px;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:transparent;
+  }
+  .wrap{max-width:645px;}
+  .controls{
+    display:flex;
+    gap:10px;
+    margin-bottom:10px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+  input[type="file"]{height:40px;background:#fff;}
+  select{
+    height:40px;
+    border-radius:10px;
+    border:1px solid #ccc;
+    background:#fff;
+    padding:0 12px;
+    font-size:14px;
+  }
+  #chart{width:100%;height:380px;}
+  #status{
+    margin-top:8px;
+    font-size:12px;
+    background:#fff;
+    padding:8px 10px;
+    border:1px solid #ddd;
+    border-radius:10px;
+    display:none;
+    white-space:pre-wrap;
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="controls">
+    <input type="file" id="fileA" accept=".csv">
+    <input type="file" id="fileB" accept=".csv">
+    <select id="windowSelect">
+      <option value="12">12-month avg</option>
+      <option value="24">24-month avg</option>
+      <option value="36">36-month avg</option>
+    </select>
+  </div>
+
+  <div id="chart"></div>
+  <div id="status"></div>
+</div>
+
+<script>
+  const fileA = document.getElementById("fileA");
+  const fileB = document.getElementById("fileB");
+  const windowSelect = document.getElementById("windowSelect");
+  const statusEl = document.getElementById("status");
+
+  function status(msg){
+    statusEl.textContent = msg;
+    statusEl.style.display = "block";
+  }
+  function clearStatus(){
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
+  }
+
+  window.addEventListener("error", (e) => {
+    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+  });
+
+  let seriesA = null; // {label, monthlyCalendar:[{date,value}], ma:[{date,value}]}
+  let seriesB = null;
+
+  fileA.addEventListener("change", () => loadFile("A"));
+  fileB.addEventListener("change", () => loadFile("B"));
+  windowSelect.addEventListener("change", () => {
+    if (seriesA) seriesA.ma = trailingAvgStrictCalendar(seriesA.monthlyCalendar, Number(windowSelect.value));
+    if (seriesB) seriesB.ma = trailingAvgStrictCalendar(seriesB.monthlyCalendar, Number(windowSelect.value));
+    draw();
+  });
+
+  async function loadFile(which){
+    clearStatus();
+
+    const input = (which === "A") ? fileA : fileB;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    try{
+      const text = await file.text();
+      const rows = parseCSV(text);
+      const monthlyCalendar = buildMonthlyCalendar(rows); // missing months = 0
+      if (!monthlyCalendar.length){
+        status(`Dataset ${which}: no valid rows found. Expected Column A=YYYYMM, Column B=Value.`);
+        return;
+      }
+
+      const n = Number(windowSelect.value);
+      const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
+
+      const obj = {
+        label: file.name.replace(/\.[^.]+$/, ""), // filename without extension
+        monthlyCalendar,
+        ma
+      };
+
+      if (which === "A") seriesA = obj;
+      else seriesB = obj;
+
+      status(`Loaded ${which}: ${obj.label}\nCalendar months: ${monthlyCalendar.length}\nNow upload the other file (optional) or view the overlay.`);
+      setTimeout(clearStatus, 1600);
+
+      draw();
+    }catch(err){
+      console.error(err);
+      status(`Error loading Dataset ${which}:\n` + (err?.message || String(err)));
+    }
+  }
+
+  // --- Robust CSV parsing (quotes, commas inside quotes) ---
+  function parseCSV(text){
+    const rows = [];
+    let row = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i=0;i<text.length;i++){
+      const ch = text[i];
+      const next = text[i+1];
+
+      if (ch === '"' && inQuotes && next === '"'){ cur += '"'; i++; continue; }
+      if (ch === '"'){ inQuotes = !inQuotes; continue; }
+
+      if (ch === "," && !inQuotes){ row.push(cur); cur=""; continue; }
+
+      if ((ch === "\n" || ch === "\r") && !inQuotes){
+        if (ch === "\r" && next === "\n") i++;
+        row.push(cur); cur="";
+        if (row.some(c => String(c).trim() !== "")) rows.push(row);
+        row=[];
+        continue;
+      }
+      cur += ch;
+    }
+
+    row.push(cur);
+    if (row.some(c => String(c).trim() !== "")) rows.push(row);
+
+    // Drop header if it looks like one
+    if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
+
+    return rows;
+  }
+
+  function toNumber(v){
+    if (typeof v === "number") return v;
+    const s = String(v ?? "").trim();
+    if (!s) return NaN;
+    const cleaned = s.replace(/£/g,"").replace(/\s/g,"").replace(/,/g,"");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function parseYYYYMM(v){
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    const digits = s.replace(/\D/g,"");
+    if (digits.length < 6) return null;
+
+    const y = Number(digits.slice(0,4));
+    const m = Number(digits.slice(4,6));
+    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+
+    return new Date(Date.UTC(y, m-1, 1));
+  }
+
+  function addMonthsUTC(dateUTC, n){
+    return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
+  }
+
+  // Aggregate to monthly mean; build continuous calendar; fill missing months = 0
+  function buildMonthlyCalendar(rows){
+    const byMonth = new Map(); // key YYYY-MM -> {sum,n,date}
+    for (const r of rows){
+      if (!Array.isArray(r) || r.length < 2) continue;
+      const d = parseYYYYMM(r[0]);
+      const v = toNumber(r[1]);
+      if (!d || !isFinite(v)) continue;
+
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+      const cur = byMonth.get(key) || {sum:0,n:0,date:d};
+      cur.sum += v;
+      cur.n += 1;
+      byMonth.set(key, cur);
+    }
+    if (byMonth.size === 0) return [];
+
+    const dates = Array.from(byMonth.values()).map(x => x.date).sort((a,b)=>a-b);
+    const minMonth = dates[0];
+    const maxMonth = dates[dates.length-1];
+
+    const out = [];
+    for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d,1)){
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+      const agg = byMonth.get(key);
+      const value = agg ? (agg.sum / agg.n) : 0; // missing month = 0
+      out.push({date:new Date(d), value});
+    }
+    return out;
+  }
+
+  // Strict calendar MA: always N months, divide by N, starts once full window exists
+  function trailingAvgStrictCalendar(data, n){
+    const out = new Array(data.length);
+    let runningSum = 0;
+
+    for (let i=0;i<data.length;i++){
+      runningSum += data[i].value;
+      if (i >= n) runningSum -= data[i-n].value;
+
+      out[i] = {
+        date: data[i].date,
+        value: (i < n-1) ? null : (runningSum / n)
+      };
+    }
+    return out;
+  }
+
+  function draw(){
+    const traces = [];
+
+    const n = Number(windowSelect.value);
+
+    if (seriesA){
+      traces.push({
+        x: seriesA.ma.map(d=>d.date),
+        y: seriesA.ma.map(d=>d.value),
+        type: "scatter",
+        mode: "lines",
+        name: `${seriesA.label} (${n}m)`
+      });
+    }
+
+    if (seriesB){
+      traces.push({
+        x: seriesB.ma.map(d=>d.date),
+        y: seriesB.ma.map(d=>d.value),
+        type: "scatter",
+        mode: "lines",
+        name: `${seriesB.label} (${n}m)`
+      });
+    }
+
+    if (!traces.length){
+      Plotly.purge("chart");
+      return;
+    }
+
+    Plotly.newPlot("chart", traces, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 75, r: 10, t: 10, b: 45 },
+
+      yaxis: {
+        title: "GBP",
+        tickprefix: "£",
+        tickformat: "~s",
+        zeroline: false
+      },
+
+      xaxis: {
+        type: "date",
+        tickformat: "%Y",
+        dtick: "M60",
+        tick0: "1975-01-01",
+        hoverformat: "%Y-%m"
+      },
+
+      legend: { orientation: "h", x: 0, y: -0.25 }
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+  }
+</script>
+
+</body>
+</html>
