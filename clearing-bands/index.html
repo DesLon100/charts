@@ -64,6 +64,7 @@
     statusEl.style.display = "none";
   }
 
+  // Show JS errors on-page so failures aren't mysterious
   window.addEventListener("error", (e) => {
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
   });
@@ -100,6 +101,7 @@
         `Loaded ${rows.length} rows → built ${monthlyCalendar.length} calendar months (missing months=0)\n` +
         `Computed 48-month rolling clearing levels.\nRendering…`
       );
+
       draw(series);
       setTimeout(clearStatus, 1500);
 
@@ -110,7 +112,7 @@
     }
   });
 
-  // --- Robust CSV parser ---
+  // --- Robust CSV parser (handles quotes, commas inside quotes) ---
   function parseCSV(text) {
     const rows = [];
     let row = [];
@@ -139,7 +141,7 @@
     row.push(cur);
     if (row.some(c => String(c).trim() !== "")) rows.push(row);
 
-    // Drop header
+    // Drop header if it looks like one
     if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
 
     return rows;
@@ -219,7 +221,6 @@
     return a + rest * (b - a);
   }
 
-  // Clearing levels:
   // "p% clearing" = threshold T such that p% of observations are >= T
   // That equals ascending quantile at q = 1 - p.
   function clearingThreshold(values, p) {
@@ -229,13 +230,14 @@
 
   function computeClearingBands(monthly, windowMonths) {
     const dates = [];
-    const c70 = []; // 70% clearing (top 70% >=)
-    const c50 = []; // 50% clearing (median)
-    const c30 = []; // 30% clearing (top 30% >=)
+    const c70 = [];
+    const c50 = [];
+    const c30 = [];
+
+    const FLOOR = 100; // ✅ display floor for log scale
 
     for (let i = 0; i < monthly.length; i++) {
       if (i < windowMonths - 1) {
-        // not enough history yet
         dates.push(monthly[i].date);
         c70.push(null); c50.push(null); c30.push(null);
         continue;
@@ -243,49 +245,30 @@
 
       const window = monthly.slice(i - windowMonths + 1, i + 1).map(d => d.value);
 
-      // Log scale cannot plot <= 0. But you WANT missing months=0 for the calculation.
-      // So: keep zeros for the quantiles; if resulting threshold <= 0, we plot null.
       const t70 = clearingThreshold(window, 0.70);
       const t50 = clearingThreshold(window, 0.50);
       const t30 = clearingThreshold(window, 0.30);
 
       dates.push(monthly[i].date);
-     c70.push(Math.max(t70, FLOOR));
-c50.push(Math.max(t50, FLOOR));
-c30.push(Math.max(t30, FLOOR));
+
+      // ✅ Option A: floor values for display on log scale (while still using zeros in calc)
+      c70.push(Math.max(t70, FLOOR));
+      c50.push(Math.max(t50, FLOOR));
+      c30.push(Math.max(t30, FLOOR));
     }
 
     return { dates, c70, c50, c30, windowMonths };
   }
 
   function draw(series) {
-    const { dates, c70, c50, c30, windowMonths } = series;
+    const { dates, c70, c50, c30 } = series;
 
-    // Two shaded bands:
-    // Band A: 70 -> 50
-    // Band B: 50 -> 30
-    // Use fill='tonexty' to shade between traces.
+    // Shaded bands via fill='tonexty':
+    // 70 line (base), then 50 filled to 70, then 30 filled to 50
     const traces = [
-      {
-        x: dates, y: c70,
-        type: "scatter", mode: "lines",
-        name: "70% clearing",
-        line: { width: 1.5 }
-      },
-      {
-        x: dates, y: c50,
-        type: "scatter", mode: "lines",
-        name: "50% clearing",
-        fill: "tonexty",   // shade between c50 and previous (c70)
-        line: { width: 1.5 }
-      },
-      {
-        x: dates, y: c30,
-        type: "scatter", mode: "lines",
-        name: "30% clearing",
-        fill: "tonexty",   // shade between c30 and previous (c50)
-        line: { width: 1.5 }
-      }
+      { x: dates, y: c70, type: "scatter", mode: "lines", name: "70% clearing", line: { width: 1.5 } },
+      { x: dates, y: c50, type: "scatter", mode: "lines", name: "50% clearing", fill: "tonexty", line: { width: 1.5 } },
+      { x: dates, y: c30, type: "scatter", mode: "lines", name: "30% clearing", fill: "tonexty", line: { width: 1.5 } }
     ];
 
     Plotly.newPlot("chart", traces, {
@@ -294,13 +277,12 @@ c30.push(Math.max(t30, FLOOR));
       margin: { l: 75, r: 10, t: 10, b: 45 },
 
       yaxis: {
-  title: "GBP (log scale)",
-  type: "log",
-  tickprefix: "£",
-  tickformat: "~s",
-  zeroline: false,
-  range: [Math.log10(100), null] // starts at £100
-},
+        title: "GBP (log scale)",
+        type: "log",
+        tickprefix: "£",
+        tickformat: "~s",
+        zeroline: false
+      },
 
       xaxis: {
         type: "date",
