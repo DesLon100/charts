@@ -250,9 +250,9 @@
       const t30 = clearingThreshold(window, 0.30);
 
       dates.push(monthly[i].date);
-      c70.push(t70 > 0 ? t70 : null);
-      c50.push(t50 > 0 ? t50 : null);
-      c30.push(t30 > 0 ? t30 : null);
+     c70.push(Math.max(t70, FLOOR));
+c50.push(Math.max(t50, FLOOR));
+c30.push(Math.max(t30, FLOOR));
     }
 
     return { dates, c70, c50, c30, windowMonths };
@@ -294,12 +294,13 @@
       margin: { l: 75, r: 10, t: 10, b: 45 },
 
       yaxis: {
-        title: "GBP (log scale)",
-        type: "log",
-        tickprefix: "£",
-        tickformat: "~s",
-        zeroline: false
-      },
+  title: "GBP (log scale)",
+  type: "log",
+  tickprefix: "£",
+  tickformat: "~s",
+  zeroline: false,
+  range: [Math.log10(100), null] // starts at £100
+},
 
       xaxis: {
         type: "date",
