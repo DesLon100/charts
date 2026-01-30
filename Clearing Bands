@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clearing Bands (48M Rolling)</title>
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+  body {
+    margin: 0;
+    padding: 14px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: transparent;
+  }
+  .wrap { max-width: 645px; }
+
+  .controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  input[type="file"] { height: 40px; background: #fff; }
+
+  #chart { width: 100%; height: 380px; }
+
+  #status {
+    margin-top: 8px;
+    font-size: 12px;
+    background: #fff;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    display: none;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="controls">
+    <input type="file" id="fileInput" accept=".csv">
+  </div>
+
+  <div id="chart"></div>
+  <div id="status"></div>
+</div>
+
+<script>
+  const fileInput = document.getElementById("fileInput");
+  const statusEl  = document.getElementById("status");
+
+  function status(msg) {
+    statusEl.textContent = msg;
+    statusEl.style.display = "block";
+  }
+  function clearStatus() {
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
+  }
+
+  window.addEventListener("error", (e) => {
+    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+  });
+
+  if (typeof Plotly === "undefined") {
+    status("Plotly failed to load. Check internet or blocked scripts.");
+  } else {
+    status("Page loaded. Upload a CSV to render clearing bands.");
+    setTimeout(clearStatus, 1200);
+  }
+
+  let monthlyCalendar = []; // continuous months, missing months = 0
+
+  fileInput.addEventListener("change", async () => {
+    clearStatus();
+    const file = fileInput.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const rows = parseCSV(text);
+
+      monthlyCalendar = buildMonthlyCalendar(rows);
+
+      if (!monthlyCalendar.length) {
+        Plotly.purge("chart");
+        status("No valid rows found.\nExpected CSV: Column A=YYYYMM, Column B=Value.");
+        return;
+      }
+
+      const series = computeClearingBands(monthlyCalendar, 48);
+
+      status(
+        `Loaded ${rows.length} rows → built ${monthlyCalendar.length} calendar months (missing months=0)\n` +
+        `Computed 48-month rolling clearing levels.\nRendering…`
+      );
+      draw(series);
+      setTimeout(clearStatus, 1500);
+
+    } catch (err) {
+      console.error(err);
+      Plotly.purge("chart");
+      status("Error:\n" + (err?.message || String(err)));
+    }
+  });
+
+  // --- Robust CSV parser ---
+  function parseCSV(text) {
+    const rows = [];
+    let row = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const next = text[i + 1];
+
+      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
+      if (ch === '"') { inQuotes = !inQuotes; continue; }
+
+      if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
+
+      if ((ch === "\n" || ch === "\r") && !inQuotes) {
+        if (ch === "\r" && next === "\n") i++;
+        row.push(cur); cur = "";
+        if (row.some(c => String(c).trim() !== "")) rows.push(row);
+        row = [];
+        continue;
+      }
+      cur += ch;
+    }
+
+    row.push(cur);
+    if (row.some(c => String(c).trim() !== "")) rows.push(row);
+
+    // Drop header
+    if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
+
+    return rows;
+  }
+
+  function toNumber(v) {
+    if (typeof v === "number") return v;
+    const s = String(v ?? "").trim();
+    if (!s) return NaN;
+    const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function parseYYYYMM(v) {
+    const s = String(v ?? "").trim();
+    if (!s) return null;
+    const digits = s.replace(/\D/g, "");
+    if (digits.length < 6) return null;
+
+    const y = Number(digits.slice(0, 4));
+    const m = Number(digits.slice(4, 6));
+    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
+
+    return new Date(Date.UTC(y, m - 1, 1));
+  }
+
+  function addMonthsUTC(dateUTC, n) {
+    return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
+  }
+
+  // Aggregate rows per month -> mean; fill missing months -> 0
+  function buildMonthlyCalendar(rows) {
+    const byMonth = new Map(); // key YYYY-MM -> {sum,n,date}
+
+    for (const r of rows) {
+      if (!Array.isArray(r) || r.length < 2) continue;
+
+      const d = parseYYYYMM(r[0]); // Col A
+      const v = toNumber(r[1]);    // Col B
+      if (!d || !isFinite(v)) continue;
+
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
+      cur.sum += v;
+      cur.n += 1;
+      byMonth.set(key, cur);
+    }
+
+    if (byMonth.size === 0) return [];
+
+    const monthDates = Array.from(byMonth.values()).map(x => x.date).sort((a,b) => a - b);
+    const minMonth = monthDates[0];
+    const maxMonth = monthDates[monthDates.length - 1];
+
+    const out = [];
+    for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)) {
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+      const agg = byMonth.get(key);
+      const value = agg ? (agg.sum / agg.n) : 0; // missing month counts as 0
+      out.push({ date: new Date(d), value });
+    }
+    return out;
+  }
+
+  // Quantile helper (ascending quantile q in [0,1])
+  // Uses linear interpolation between points.
+  function quantile(sortedAsc, q) {
+    const n = sortedAsc.length;
+    if (n === 0) return NaN;
+    if (n === 1) return sortedAsc[0];
+    const pos = (n - 1) * q;
+    const base = Math.floor(pos);
+    const rest = pos - base;
+    const a = sortedAsc[base];
+    const b = sortedAsc[Math.min(base + 1, n - 1)];
+    return a + rest * (b - a);
+  }
+
+  // Clearing levels:
+  // "p% clearing" = threshold T such that p% of observations are >= T
+  // That equals ascending quantile at q = 1 - p.
+  function clearingThreshold(values, p) {
+    const asc = values.slice().sort((a,b) => a - b);
+    return quantile(asc, 1 - p);
+  }
+
+  function computeClearingBands(monthly, windowMonths) {
+    const dates = [];
+    const c70 = []; // 70% clearing (top 70% >=)
+    const c50 = []; // 50% clearing (median)
+    const c30 = []; // 30% clearing (top 30% >=)
+
+    for (let i = 0; i < monthly.length; i++) {
+      if (i < windowMonths - 1) {
+        // not enough history yet
+        dates.push(monthly[i].date);
+        c70.push(null); c50.push(null); c30.push(null);
+        continue;
+      }
+
+      const window = monthly.slice(i - windowMonths + 1, i + 1).map(d => d.value);
+
+      // Log scale cannot plot <= 0. But you WANT missing months=0 for the calculation.
+      // So: keep zeros for the quantiles; if resulting threshold <= 0, we plot null.
+      const t70 = clearingThreshold(window, 0.70);
+      const t50 = clearingThreshold(window, 0.50);
+      const t30 = clearingThreshold(window, 0.30);
+
+      dates.push(monthly[i].date);
+      c70.push(t70 > 0 ? t70 : null);
+      c50.push(t50 > 0 ? t50 : null);
+      c30.push(t30 > 0 ? t30 : null);
+    }
+
+    return { dates, c70, c50, c30, windowMonths };
+  }
+
+  function draw(series) {
+    const { dates, c70, c50, c30, windowMonths } = series;
+
+    // Two shaded bands:
+    // Band A: 70 -> 50
+    // Band B: 50 -> 30
+    // Use fill='tonexty' to shade between traces.
+    const traces = [
+      {
+        x: dates, y: c70,
+        type: "scatter", mode: "lines",
+        name: "70% clearing",
+        line: { width: 1.5 }
+      },
+      {
+        x: dates, y: c50,
+        type: "scatter", mode: "lines",
+        name: "50% clearing",
+        fill: "tonexty",   // shade between c50 and previous (c70)
+        line: { width: 1.5 }
+      },
+      {
+        x: dates, y: c30,
+        type: "scatter", mode: "lines",
+        name: "30% clearing",
+        fill: "tonexty",   // shade between c30 and previous (c50)
+        line: { width: 1.5 }
+      }
+    ];
+
+    Plotly.newPlot("chart", traces, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 75, r: 10, t: 10, b: 45 },
+
+      yaxis: {
+        title: "GBP (log scale)",
+        type: "log",
+        tickprefix: "£",
+        tickformat: "~s",
+        zeroline: false
+      },
+
+      xaxis: {
+        type: "date",
+        tickformat: "%Y",
+        dtick: "M60",          // 5-year ticks
+        tick0: "1975-01-01",
+        hoverformat: "%Y-%m"
+      },
+
+      legend: { orientation: "h", x: 0, y: -0.22 }
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+  }
+</script>
+
+</body>
+</html>
