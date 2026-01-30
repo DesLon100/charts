@@ -76,7 +76,9 @@
     setTimeout(clearStatus, 1200);
   }
 
-  let monthlyCalendar = []; // continuous months, missing months = 0
+let monthlyCalendar = []; // continuous months, missing months = 0
+const FLOOR = 100;        // display floor for log scale (GBP)
+
 
   fileInput.addEventListener("change", async () => {
     clearStatus();
