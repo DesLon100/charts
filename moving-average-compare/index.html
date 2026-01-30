@@ -22,7 +22,12 @@
     flex-wrap:wrap;
     align-items:center;
   }
-  input[type="file"]{height:40px;background:#fff;}
+  input[type="file"]{
+  height:40px;
+  background:#fff;
+  max-width:200px;         /* KEY: prevents wrapping */
+  font-size:12px;
+}
   select{
     height:40px;
     border-radius:10px;
