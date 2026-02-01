@@ -1,154 +1,217 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>6-Monthly Lots by Liquidity Regime</title>
-  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>6-monthly auction lots by liquidity regime (920 cohort)</title>
+
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-    .wrap { width: 645px; max-width: 100%; margin: 0 auto; }
-    #controls { display: flex; gap: 10px; align-items: center; margin: 10px 0 8px; }
-    #chart { width: 645px; max-width: 100%; margin: 0 auto; }
-    .hint { font-size: 12px; opacity: 0.75; margin-top: 6px; }
-    input[type="file"] { max-width: 100%; }
-    button { padding: 6px 10px; cursor: pointer; }
+    body{
+      margin:0;
+      padding:14px;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background:#fff;
+    }
+    .page{ max-width:1200px; margin:0 auto; }
+    .toolbar{
+      display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+      justify-content:space-between; margin-bottom:10px;
+    }
+    .toolbar .left{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .hint{ color:#555; font-size:13px; }
+    #chart{ width:100%; }
+    input[type="file"]{ font-size:14px; }
+    button{
+      border:1px solid #ccc; background:#f7f7f7; padding:6px 10px; border-radius:8px;
+      cursor:pointer;
+    }
+    button:hover{ background:#efefef; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div id="controls">
-      <input id="csvFile" type="file" accept=".csv,text/csv" />
-      <button id="loadSample">Load repo CSV</button>
+  <div class="page">
+    <div class="toolbar">
+      <div class="left">
+        <input id="csvFile" type="file" accept=".csv,text/csv" />
+        <button id="demoBtn" type="button">Load demo (built-in)</button>
+      </div>
+      <div class="hint">
+        CSV columns required: <b>period_start</b>, <b>illiquid_2_5</b>, <b>intermediate_6_19</b>, <b>liquid_20_plus</b>
+      </div>
     </div>
-    <div class="hint">
-      CSV columns required: <code>period_start</code>, <code>illiquid_lots</code>, <code>intermediate_lots</code>, <code>liquid_lots</code>
-    </div>
+
+    <div id="chart"></div>
   </div>
 
-  <div id="chart"></div>
+<script>
+/* -------- helpers -------- */
 
-  <script>
-    // ---- helpers ----
-    function parseCSV(text) {
-      const lines = text.trim().split(/\r?\n/);
-      const headers = lines[0].split(",").map(h => h.trim());
-      const idx = Object.fromEntries(headers.map((h,i)=>[h, i]));
-      const rows = lines.slice(1).map(l => l.split(","));
+function parseCSV(text){
+  const lines = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").trim().split("\n");
+  if(lines.length < 2) throw new Error("CSV has no data rows.");
 
-      const required = ["period_start","illiquid_lots","intermediate_lots","liquid_lots"];
-      for (const c of required) {
-        if (!(c in idx)) throw new Error(`Missing required column: ${c}`);
-      }
+  const header = lines[0].split(",").map(h => h.trim());
+  const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
 
-      return rows.map(r => ({
-        period_start: r[idx["period_start"]],
-        illiquid_lots: +r[idx["illiquid_lots"]],
-        intermediate_lots: +r[idx["intermediate_lots"]],
-        liquid_lots: +r[idx["liquid_lots"]],
-      }));
+  const required = ["period_start","illiquid_2_5","intermediate_6_19","liquid_20_plus"];
+  for(const col of required){
+    if(!(col in idx)) throw new Error(`Missing column: ${col}`);
+  }
+
+  const x = [];
+  const y1 = [], y2 = [], y3 = [];
+
+  for(let r=1; r<lines.length; r++){
+    if(!lines[r].trim()) continue;
+    const parts = lines[r].split(",").map(s => s.trim());
+
+    // Use period_start as x label; supports "YYYY-MM-DD" (recommended)
+    const ps = parts[idx.period_start];
+    x.push(ps);
+
+    y1.push(Number(parts[idx.illiquid_2_5] || 0));
+    y2.push(Number(parts[idx.intermediate_6_19] || 0));
+    y3.push(Number(parts[idx.liquid_20_plus] || 0));
+  }
+
+  return { x, y1, y2, y3 };
+}
+
+function dynamicHeight(){
+  // Nice default for Gutenberg embeds too
+  const w = Math.min(document.querySelector(".page").clientWidth, 1200);
+  const h = Math.max(520, Math.round(w * 0.55));
+  return h;
+}
+
+function renderChart({x,y1,y2,y3}){
+  const traces = [
+    {
+      x, y: y1,
+      type: "scatter",
+      mode: "lines",
+      name: "Illiquid (2–5)",
+      stackgroup: "one",
+      line: { width: 0.5 }
+    },
+    {
+      x, y: y2,
+      type: "scatter",
+      mode: "lines",
+      name: "Intermediate (6–19)",
+      stackgroup: "one",
+      line: { width: 0.5 }
+    },
+    {
+      x, y: y3,
+      type: "scatter",
+      mode: "lines",
+      name: "Liquid (≥20)",
+      stackgroup: "one",
+      line: { width: 0.5 }
     }
+  ];
 
-    async function fetchCSV(url) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`Failed to fetch ${url} (${res.status})`);
-      return await res.text();
+  const layout = {
+    title: {
+      text: "6-monthly auction lots by liquidity regime<br>920-artist cohort (since 2009)",
+      x: 0.5
+    },
+    height: dynamicHeight(),
+    margin: { l: 70, r: 20, t: 80, b: 60 },
+    xaxis: {
+      title: "Time (bi-annual)",
+      tickangle: 0,
+      automargin: true
+    },
+    yaxis: {
+      title: "Number of lots",
+      rangemode: "tozero"
+    },
+    legend: {
+      x: 0.02, y: 0.98,
+      bgcolor: "rgba(255,255,255,0.7)",
+      bordercolor: "rgba(0,0,0,0.15)",
+      borderwidth: 1
     }
+  };
 
-    function renderChart(data) {
-      const x = data.map(d => d.period_start);
+  const config = {
+    responsive: true,
+    displaylogo: false
+  };
 
-      const traces = [
-        {
-          x, y: data.map(d => d.illiquid_lots),
-          type: "scatter", mode: "lines",
-          name: "Illiquid (2–5)",
-          stackgroup: "one", fill: "tonexty",
-          line: { width: 1.5 }
-        },
-        {
-          x, y: data.map(d => d.intermediate_lots),
-          type: "scatter", mode: "lines",
-          name: "Intermediate (6–19)",
-          stackgroup: "one", fill: "tonexty",
-          line: { width: 1.5 }
-        },
-        {
-          x, y: data.map(d => d.liquid_lots),
-          type: "scatter", mode: "lines",
-          name: "Liquid (≥20)",
-          stackgroup: "one", fill: "tonexty",
-          line: { width: 1.5 }
-        }
-      ];
+  Plotly.newPlot("chart", traces, layout, config);
+}
 
-      const layout = {
-        // Remove fixed width/height to reduce overlap on mobile; let responsive handle it.
-        height: 420,
-        margin: { l: 70, r: 20, t: 70, b: 60 },
-        title: {
-          text: "6-Monthly Auction Lots by Liquidity Regime (Cohort)",
-          x: 0.02, xanchor: "left",
-          font: { size: 16 }
-        },
-        xaxis: {
-          title: "Time (bi-annual)",
-          automargin: true,
-          tickangle: 0
-        },
-        yaxis: {
-          title: "Number of lots",
-          automargin: true,
-          rangemode: "tozero"
-        },
-        legend: {
-          orientation: "h",
-          x: 0.02, xanchor: "left",
-          y: 1.08, yanchor: "bottom",
-          font: { size: 12 }
-        }
-      };
+// Handle resizing cleanly
+window.addEventListener("resize", () => {
+  const gd = document.getElementById("chart");
+  if(gd && gd.data){
+    Plotly.relayout(gd, { height: dynamicHeight() });
+  }
+});
 
-      Plotly.newPlot("chart", traces, layout, {
-        responsive: true,
-        displaylogo: false
-      });
-    }
+/* -------- wiring -------- */
 
-    // ---- wire up upload ----
-    const fileInput = document.getElementById("csvFile");
-    fileInput.addEventListener("change", async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
+document.getElementById("csvFile").addEventListener("change", async (ev) => {
+  const file = ev.target.files?.[0];
+  if(!file) return;
 
-      try {
-        const text = await file.text();
-        const data = parseCSV(text);
-        renderChart(data);
-      } catch (err) {
-        alert(err.message || String(err));
-      }
-    });
+  const text = await file.text();
+  try{
+    const data = parseCSV(text);
+    renderChart(data);
+  }catch(err){
+    alert(err.message || String(err));
+  }
+});
 
-    // ---- optional: load CSV from repo ----
-    document.getElementById("loadSample").addEventListener("click", async () => {
-      try {
-        const text = await fetchCSV("data/liquidity_regime_halfyear.csv");
-        const data = parseCSV(text);
-        renderChart(data);
-      } catch (err) {
-        alert(err.message || String(err));
-      }
-    });
+// Built-in demo so the page never loads blank
+document.getElementById("demoBtn").addEventListener("click", () => {
+  const demoCSV =
+`period_start,illiquid_2_5,intermediate_6_19,liquid_20_plus
+2009-01-01,1200,2700,2100
+2009-07-01,1100,2900,1700
+2010-01-01,1250,2800,2300
+2010-07-01,1150,3000,1900
+2011-01-01,1050,3100,2500
+2011-07-01,1150,3050,1800
+2012-01-01,1100,3200,2100
+2012-07-01,1200,3150,2000
+2013-01-01,1120,3300,1900
+2013-07-01,1200,3250,2200
+2014-01-01,1100,3400,2100
+2014-07-01,1150,3350,2300
+2015-01-01,1180,3300,2550
+2015-07-01,1100,3350,1900
+2016-01-01,1200,3250,2500
+2016-07-01,1080,3300,1950
+2017-01-01,1120,3000,2900
+2017-07-01,1100,3100,2400
+2018-01-01,1080,2950,2600
+2018-07-01,1120,2850,2600
+2019-01-01,1050,2900,2500
+2019-07-01,1200,2750,2300
+2020-01-01,1000,1800,600
+2020-07-01,1150,2600,2400
+2021-01-01,1200,2500,2000
+2021-07-01,1100,2900,2200
+2022-01-01,1050,3050,2000
+2022-07-01,1150,3000,2100
+2023-01-01,1180,2950,2250
+2023-07-01,1220,2900,2150
+2024-01-01,1250,2850,2100
+2024-07-01,1275,2800,2050
+2025-01-01,1300,2750,1900
+2025-07-01,1325,2850,1800`;
+  renderChart(parseCSV(demoCSV));
+});
 
-    // Auto-load repo CSV if present (nice default)
-    (async () => {
-      try {
-        const text = await fetchCSV("data/liquidity_regime_halfyear.csv");
-        renderChart(parseCSV(text));
-      } catch {
-        // If it doesn't exist, user can upload instead.
-      }
-    })();
-  </script>
+// initial render
+document.getElementById("demoBtn").click();
+</script>
 </body>
 </html>
