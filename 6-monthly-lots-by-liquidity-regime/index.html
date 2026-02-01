@@ -179,13 +179,12 @@
       return new Date(Date.UTC(y, m - 1, d));
     }
 
-    // Slash: d/m/yyyy or m/d/yyyy (we disambiguate for your use-case)
+    // Slash: d/m/yyyy or m/d/yyyy (disambiguate for half-year starts)
     const sl = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
     if (sl){
       const a = +sl[1], b = +sl[2], y = +sl[3];
 
       // Your periods should be Jan 1 or Jul 1.
-      // If one part is 1 and the other is 1 or 7, treat it as day=1, month=other.
       let day, month;
       if (a === 1 && (b === 1 || b === 7)) { day = 1; month = b; }
       else if (b === 1 && (a === 1 || a === 7)) { day = 1; month = a; }
@@ -198,20 +197,57 @@
     return null;
   }
 
+  function buildYearDividers(xDates){
+    // "Small dividers for missing years": draw faint vertical lines each Jan 1.
+    const years = xDates.map(d => d.getUTCFullYear());
+    const minY = Math.min(...years);
+    const maxY = Math.max(...years);
+
+    const shapes = [];
+    for (let y = minY; y <= maxY; y++){
+      const d = new Date(Date.UTC(y, 0, 1));
+      shapes.push({
+        type: "line",
+        xref: "x",
+        yref: "paper",
+        x0: d, x1: d,
+        y0: 0, y1: 1,
+        line: { width: 1 },
+        opacity: 0.18,
+        layer: "below"
+      });
+    }
+    return shapes;
+  }
+
   function draw({ x, yI, yM, yL }){
-    // Trace order controls legend left-to-right order
+    // Keep vertical stacking order the same as before:
+    // bottom = Illiquid, middle = Intermediate, top = Liquid
+    // Legend should be a row above the chart, left-to-right, with an extra "Regimes" label.
     const traces = [
-      { x, y: yL, type:"scatter", mode:"lines", name:"Liquid (≥20)", stackgroup:"one", line:{ width:0.5 } },
+      // Dummy legend label (no visible line/marker)
+      {
+        x: [x[0]], y: [0],
+        type: "scatter",
+        mode: "lines",
+        name: "Regimes:",
+        showlegend: true,
+        hoverinfo: "skip",
+        line: { width: 0 }
+      },
+
+      // Stack group (order controls vertical stacking)
+      { x, y: yI, type:"scatter", mode:"lines", name:"Illiquid (2–5)",       stackgroup:"one", line:{ width:0.5 } },
       { x, y: yM, type:"scatter", mode:"lines", name:"Intermediate (6–19)", stackgroup:"one", line:{ width:0.5 } },
-      { x, y: yI, type:"scatter", mode:"lines", name:"Illiquid (2–5)", stackgroup:"one", line:{ width:0.5 } }
+      { x, y: yL, type:"scatter", mode:"lines", name:"Liquid (≥20)",        stackgroup:"one", line:{ width:0.5 } }
     ];
 
     Plotly.newPlot("chart", traces, {
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
 
-      // Extra top margin to host the legend in the "title area"
-      margin: { l: 80, r: 10, t: 40, b: 55 },
+      // Space for the legend row above plot
+      margin: { l: 88, r: 10, t: 44, b: 55 },
 
       yaxis: {
         title: "Aggregated sold lots",
@@ -223,11 +259,14 @@
         type: "date",
         title: "",
         tickformat: "%Y",
-        dtick: "M12",
-        tick0: "2009-01-01",
+        dtick: "M24",              // every 2 years
+        tick0: "2010-01-01",        // anchor to a clean even year
         hoverformat: "%Y-%m-%d",
         automargin: true
       },
+
+      // faint yearly dividers
+      shapes: buildYearDividers(x),
 
       // Legend as a single row above the plot (left-to-right)
       legend: {
