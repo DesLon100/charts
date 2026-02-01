@@ -5,20 +5,41 @@
   <title>6-Monthly Lots by Liquidity Regime</title>
   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
   <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { width: 645px; max-width: 100%; margin: 0 auto; }
+    #controls { display: flex; gap: 10px; align-items: center; margin: 10px 0 8px; }
     #chart { width: 645px; max-width: 100%; margin: 0 auto; }
+    .hint { font-size: 12px; opacity: 0.75; margin-top: 6px; }
+    input[type="file"] { max-width: 100%; }
+    button { padding: 6px 10px; cursor: pointer; }
   </style>
 </head>
 <body>
+  <div class="wrap">
+    <div id="controls">
+      <input id="csvFile" type="file" accept=".csv,text/csv" />
+      <button id="loadSample">Load repo CSV</button>
+    </div>
+    <div class="hint">
+      CSV columns required: <code>period_start</code>, <code>illiquid_lots</code>, <code>intermediate_lots</code>, <code>liquid_lots</code>
+    </div>
+  </div>
+
   <div id="chart"></div>
 
   <script>
-    async function loadCSV(url) {
-      const res = await fetch(url);
-      const text = await res.text();
+    // ---- helpers ----
+    function parseCSV(text) {
       const lines = text.trim().split(/\r?\n/);
-      const headers = lines[0].split(",");
+      const headers = lines[0].split(",").map(h => h.trim());
+      const idx = Object.fromEntries(headers.map((h,i)=>[h, i]));
       const rows = lines.slice(1).map(l => l.split(","));
-      const idx = Object.fromEntries(headers.map((h,i)=>[h.trim(), i]));
+
+      const required = ["period_start","illiquid_lots","intermediate_lots","liquid_lots"];
+      for (const c of required) {
+        if (!(c in idx)) throw new Error(`Missing required column: ${c}`);
+      }
+
       return rows.map(r => ({
         period_start: r[idx["period_start"]],
         illiquid_lots: +r[idx["illiquid_lots"]],
@@ -27,30 +48,106 @@
       }));
     }
 
-    (async () => {
-      const data = await loadCSV("data/liquidity_regime_halfyear.csv");
+    async function fetchCSV(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch ${url} (${res.status})`);
+      return await res.text();
+    }
+
+    function renderChart(data) {
       const x = data.map(d => d.period_start);
 
       const traces = [
-        { x, y: data.map(d => d.illiquid_lots), type: "scatter", mode: "lines",
-          name: "Illiquid (2–5)", stackgroup: "one", fill: "tonexty" },
-        { x, y: data.map(d => d.intermediate_lots), type: "scatter", mode: "lines",
-          name: "Intermediate (6–19)", stackgroup: "one", fill: "tonexty" },
-        { x, y: data.map(d => d.liquid_lots), type: "scatter", mode: "lines",
-          name: "Liquid (≥20)", stackgroup: "one", fill: "tonexty" }
+        {
+          x, y: data.map(d => d.illiquid_lots),
+          type: "scatter", mode: "lines",
+          name: "Illiquid (2–5)",
+          stackgroup: "one", fill: "tonexty",
+          line: { width: 1.5 }
+        },
+        {
+          x, y: data.map(d => d.intermediate_lots),
+          type: "scatter", mode: "lines",
+          name: "Intermediate (6–19)",
+          stackgroup: "one", fill: "tonexty",
+          line: { width: 1.5 }
+        },
+        {
+          x, y: data.map(d => d.liquid_lots),
+          type: "scatter", mode: "lines",
+          name: "Liquid (≥20)",
+          stackgroup: "one", fill: "tonexty",
+          line: { width: 1.5 }
+        }
       ];
 
       const layout = {
-        width: 645,
-        height: 360,
-        margin: { l: 60, r: 20, t: 40, b: 50 },
-        title: "6-Monthly Auction Lots by Liquidity Regime (Cohort)",
-        xaxis: { title: "Time (bi-annual)" },
-        yaxis: { title: "Number of lots" },
-        legend: { orientation: "h", x: 0, y: 1.15 }
+        // Remove fixed width/height to reduce overlap on mobile; let responsive handle it.
+        height: 420,
+        margin: { l: 70, r: 20, t: 70, b: 60 },
+        title: {
+          text: "6-Monthly Auction Lots by Liquidity Regime (Cohort)",
+          x: 0.02, xanchor: "left",
+          font: { size: 16 }
+        },
+        xaxis: {
+          title: "Time (bi-annual)",
+          automargin: true,
+          tickangle: 0
+        },
+        yaxis: {
+          title: "Number of lots",
+          automargin: true,
+          rangemode: "tozero"
+        },
+        legend: {
+          orientation: "h",
+          x: 0.02, xanchor: "left",
+          y: 1.08, yanchor: "bottom",
+          font: { size: 12 }
+        }
       };
 
-      Plotly.newPlot("chart", traces, layout, { responsive: true });
+      Plotly.newPlot("chart", traces, layout, {
+        responsive: true,
+        displaylogo: false
+      });
+    }
+
+    // ---- wire up upload ----
+    const fileInput = document.getElementById("csvFile");
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      try {
+        const text = await file.text();
+        const data = parseCSV(text);
+        renderChart(data);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    // ---- optional: load CSV from repo ----
+    document.getElementById("loadSample").addEventListener("click", async () => {
+      try {
+        const text = await fetchCSV("data/liquidity_regime_halfyear.csv");
+        const data = parseCSV(text);
+        renderChart(data);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+    });
+
+    // Auto-load repo CSV if present (nice default)
+    (async () => {
+      try {
+        const text = await fetchCSV("data/liquidity_regime_halfyear.csv");
+        renderChart(parseCSV(text));
+      } catch {
+        // If it doesn't exist, user can upload instead.
+      }
     })();
   </script>
 </body>
