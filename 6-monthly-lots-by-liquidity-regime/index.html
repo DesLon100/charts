@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>6-monthly auction lots by liquidity regime</title>
+<title>6-monthly lots by liquidity regime</title>
 
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
@@ -85,7 +85,6 @@
       const text = await file.text();
       const parsed = parseTable(text);
 
-      // Validate required columns
       const required = ["period_start","illiquid_2_5","intermediate_6_19","liquid_20_plus"];
       for (const k of required){
         if (!(k in parsed.idx)) throw new Error(`Missing column: ${k}`);
@@ -97,17 +96,16 @@
       const yL = [];
 
       for (const row of parsed.rows){
-        // period_start as label: keep as-is, but strip time if present
-        let ps = String(row[parsed.idx.period_start] ?? "").trim();
-        ps = ps.replace(/T.*$/, "");           // ISO time
-        ps = ps.replace(/\s+\d\d:.*$/, "");    // " 00:00:00.000"
-        if (!ps) continue;
+        let psRaw = String(row[parsed.idx.period_start] ?? "").trim();
+        psRaw = psRaw.replace(/T.*$/, "").replace(/\s+\d\d:.*$/, "");
+        const psDate = parsePeriodStart(psRaw);
+        if (!psDate) continue;
 
         const ill = toNumber(row[parsed.idx.illiquid_2_5]);
         const mid = toNumber(row[parsed.idx.intermediate_6_19]);
         const liq = toNumber(row[parsed.idx.liquid_20_plus]);
 
-        x.push(ps);
+        x.push(psDate);
         yI.push(isFinite(ill) ? ill : 0);
         yM.push(isFinite(mid) ? mid : 0);
         yL.push(isFinite(liq) ? liq : 0);
@@ -156,7 +154,6 @@
     const rows = [];
     for (let i=1; i<lines.length; i++){
       const parts = lines[i].split(delim);
-      // pad if short
       while (parts.length < header.length) parts.push("");
       rows.push(parts.map(s => String(s).trim()));
     }
@@ -167,68 +164,84 @@
   function toNumber(v){
     const s = String(v ?? "").trim();
     if (!s) return NaN;
-    // handle "1,234" and currency symbols
     const cleaned = s.replace(/£/g,"").replace(/\s/g,"").replace(/,/g,"");
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : NaN;
   }
 
+  function parsePeriodStart(s){
+    if (!s) return null;
+
+    // ISO: YYYY-MM-DD
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (iso){
+      const y = +iso[1], m = +iso[2], d = +iso[3];
+      return new Date(Date.UTC(y, m - 1, d));
+    }
+
+    // Slash: d/m/yyyy or m/d/yyyy (we disambiguate for your use-case)
+    const sl = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+    if (sl){
+      const a = +sl[1], b = +sl[2], y = +sl[3];
+
+      // Your periods should be Jan 1 or Jul 1.
+      // If one part is 1 and the other is 1 or 7, treat it as day=1, month=other.
+      let day, month;
+      if (a === 1 && (b === 1 || b === 7)) { day = 1; month = b; }
+      else if (b === 1 && (a === 1 || a === 7)) { day = 1; month = a; }
+      else { day = a; month = b; } // fallback UK (day/month)
+
+      if (month < 1 || month > 12) return null;
+      return new Date(Date.UTC(y, month - 1, day));
+    }
+
+    return null;
+  }
+
   function draw({ x, yI, yM, yL }){
+    // Trace order controls legend left-to-right order
     const traces = [
-      {
-        x, y: yI,
-        type: "scatter",
-        mode: "lines",
-        name: "Illiquid (2–5)",
-        stackgroup: "one",
-        line: { width: 0.5 }
-      },
-      {
-        x, y: yM,
-        type: "scatter",
-        mode: "lines",
-        name: "Intermediate (6–19)",
-        stackgroup: "one",
-        line: { width: 0.5 }
-      },
-      {
-        x, y: yL,
-        type: "scatter",
-        mode: "lines",
-        name: "Liquid (≥20)",
-        stackgroup: "one",
-        line: { width: 0.5 }
-      }
+      { x, y: yL, type:"scatter", mode:"lines", name:"Liquid (≥20)", stackgroup:"one", line:{ width:0.5 } },
+      { x, y: yM, type:"scatter", mode:"lines", name:"Intermediate (6–19)", stackgroup:"one", line:{ width:0.5 } },
+      { x, y: yI, type:"scatter", mode:"lines", name:"Illiquid (2–5)", stackgroup:"one", line:{ width:0.5 } }
     ];
 
     Plotly.newPlot("chart", traces, {
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      margin: { l: 70, r: 10, t: 60, b: 55 },
 
-      title: {
-        text: "6-monthly auction lots by liquidity regime<br>920-artist cohort (since 2009)",
-        x: 0.5
-      },
+      // Extra top margin to host the legend in the "title area"
+      margin: { l: 80, r: 10, t: 40, b: 55 },
 
       yaxis: {
-        title: "Number of lots",
+        title: "Aggregated sold lots",
         rangemode: "tozero",
         zeroline: false
       },
 
       xaxis: {
-        title: "Time (bi-annual)",
-        tickangle: 0,
+        type: "date",
+        title: "",
+        tickformat: "%Y",
+        dtick: "M12",
+        tick0: "2009-01-01",
+        hoverformat: "%Y-%m-%d",
         automargin: true
       },
 
+      // Legend as a single row above the plot (left-to-right)
       legend: {
-        x: 0.02, y: 0.98,
+        orientation: "h",
+        x: 0,
+        y: 1.18,
+        xanchor: "left",
+        yanchor: "top",
         bgcolor: "rgba(255,255,255,0.7)",
         bordercolor: "rgba(0,0,0,0.15)",
-        borderwidth: 1
+        borderwidth: 1,
+        font: { size: 12 }
       }
+
     }, {
       displayModeBar: false,
       responsive: true
