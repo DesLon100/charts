@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>6-Monthly Lots by Liquidity Regime</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <style>
+    #chart { width: 645px; max-width: 100%; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="chart"></div>
+
+  <script>
+    async function loadCSV(url) {
+      const res = await fetch(url);
+      const text = await res.text();
+      const lines = text.trim().split(/\r?\n/);
+      const headers = lines[0].split(",");
+      const rows = lines.slice(1).map(l => l.split(","));
+      const idx = Object.fromEntries(headers.map((h,i)=>[h.trim(), i]));
+      return rows.map(r => ({
+        period_start: r[idx["period_start"]],
+        illiquid_lots: +r[idx["illiquid_lots"]],
+        intermediate_lots: +r[idx["intermediate_lots"]],
+        liquid_lots: +r[idx["liquid_lots"]],
+      }));
+    }
+
+    (async () => {
+      const data = await loadCSV("data/liquidity_regime_halfyear.csv");
+      const x = data.map(d => d.period_start);
+
+      const traces = [
+        { x, y: data.map(d => d.illiquid_lots), type: "scatter", mode: "lines",
+          name: "Illiquid (2–5)", stackgroup: "one", fill: "tonexty" },
+        { x, y: data.map(d => d.intermediate_lots), type: "scatter", mode: "lines",
+          name: "Intermediate (6–19)", stackgroup: "one", fill: "tonexty" },
+        { x, y: data.map(d => d.liquid_lots), type: "scatter", mode: "lines",
+          name: "Liquid (≥20)", stackgroup: "one", fill: "tonexty" }
+      ];
+
+      const layout = {
+        width: 645,
+        height: 360,
+        margin: { l: 60, r: 20, t: 40, b: 50 },
+        title: "6-Monthly Auction Lots by Liquidity Regime (Cohort)",
+        xaxis: { title: "Time (bi-annual)" },
+        yaxis: { title: "Number of lots" },
+        legend: { orientation: "h", x: 0, y: 1.15 }
+      };
+
+      Plotly.newPlot("chart", traces, layout, { responsive: true });
+    })();
+  </script>
+</body>
+</html>
