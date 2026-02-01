@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Picasso Mean vs Median (24M MMA)</title>
+
+  <!-- Plotly (CDN) -->
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+
+  <style>
+    :root{
+      --maxw: 645px;          /* Gutenberg narrow block target */
+      --pad: 12px;
+      --border: #e6e6e6;
+      --text: #111;
+      --muted: #666;
+      --bg: #fff;
+      --btnbg: #f6f6f6;
+    }
+
+    body{
+      margin:0;
+      padding: var(--pad);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    /* Keeps GitHub + Gutenberg rendering consistent */
+    .page{
+      max-width: var(--maxw);
+      margin: 0 auto;
+    }
+
+    .toolbar{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:10px;
+      padding:10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .toolbar .left{
+      display:flex;
+      flex-wrap:wrap;
+      gap:10px;
+      align-items:center;
+    }
+
+    .toolbar label{
+      font-size: 13px;
+      color: var(--muted);
+      display:flex;
+      gap:8px;
+      align-items:center;
+      white-space:nowrap;
+    }
+
+    input[type="file"]{
+      font-size: 13px;
+    }
+
+    .hint{
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+      margin: 8px 0 12px 0;
+    }
+
+    .chart{
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .spacer{ height: 10px; }
+
+    .err{
+      display:none;
+      margin-top:10px;
+      padding:10px;
+      border:1px solid #f2c2c2;
+      background:#fff3f3;
+      border-radius:10px;
+      font-size:13px;
+      color:#7a0000;
+    }
+
+    .meta{
+      font-size:12px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+    <div class="toolbar">
+      <div class="left">
+        <label>
+          Upload CSV:
+          <input id="fileInput" type="file" accept=".csv,text/csv" />
+        </label>
+
+        <label>
+          MMA window (months):
+          <input id="mmaWindow" type="number" min="6" max="60" value="24" style="width:70px;" />
+        </label>
+
+        <label>
+          LOESS smooth:
+          <input id="loessFrac" type="number" min="0.05" max="0.50" step="0.01" value="0.18" style="width:70px;" />
+        </label>
+      </div>
+
+      <div class="right">
+        <button id="useDemo" style="padding:7px 10px;border:1px solid var(--border);background:var(--btnbg);border-radius:10px;cursor:pointer;">
+          Use demo data
+        </button>
+      </div>
+    </div>
+
+    <div class="hint">
+      CSV must include columns <b>Month</b> (YYYYMM) and <b>Value</b> (GBP). Example: Month=198306, Value=125000.
+      This will compute monthly mean/median, apply a moving average (default 24M), then fit LOESS on log values.
+    </div>
+
+    <div id="err" class="err"></div>
+
+    <div id="chartMain" class="chart"></div>
+    <div class="spacer"></div>
+    <div id="chartRatio" class="chart"></div>
+
+    <div id="meta" class="meta"></div>
+  </div>
+
+<script>
+/* -----------------------------
+   Utilities
+------------------------------ */
+
+function showError(msg){
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = msg;
+}
+
+function clearError(){
+  const el = document.getElementById("err");
+  el.style.display = "none";
+  el.textContent = "";
+}
+
+function clamp(x, lo, hi){ return Math.max(lo, Math.min(hi, x)); }
+
+function parseCSV(text){
+  // Minimal CSV parser (handles commas, newlines; assumes no quoted commas)
+  const lines = text.replace(/\r/g, "").split("\n").filter(l => l.trim().length);
+  if(lines.length < 2) throw new Error("CSV appears empty.");
+
+  const headers = lines[0].split(",").map(h => h.trim());
+  const idxMonth = headers.findIndex(h => h.toLowerCase() === "month");
+  const idxValue = headers.findIndex(h => h.toLowerCase() === "value");
+
+  if(idxMonth === -1 || idxValue === -1){
+    throw new Error("CSV must contain headers: Month, Value");
+  }
+
+  const rows = [];
+  for(let i=1; i<lines.length; i++){
+    const parts = lines[i].split(",").map(x => x.trim());
+    const m = parts[idxMonth];
+    const v = parts[idxValue];
+    if(!m || !v) continue;
+
+    const monthStr = String(m).padStart(6, "0");
+    const year = parseInt(monthStr.slice(0,4),10);
+    const mon  = parseInt(monthStr.slice(4,6),10);
+    const val  = Number(v);
+
+    if(!Number.isFinite(year) || !Number.isFinite(mon) || !Number.isFinite(val)) continue;
+    if(mon < 1 || mon > 12) continue;
+
+    // Use UTC date at first of month
+    const date = new Date(Date.UTC(year, mon-1, 1));
+    rows.push({ date, value: val });
+  }
+
+  if(rows.length === 0) throw new Error("No valid rows parsed. Check Month (YYYYMM) and Value (numeric).");
+  rows.sort((a,b) => a.date - b.date);
+  return rows;
+}
+
+function monthKey(d){
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+}
+
+function groupMonthly(rows){
+  // Returns arrays aligned by month: dates[], mean[], median[], n[]
+  const bucket = new Map();
+  for(const r of rows){
+    const key = monthKey(r.date);
+    if(!bucket.has(key)) bucket.set(key, { date: r.date, values: [] });
+    bucket.get(key).values.push(r.value);
+  }
+
+  const months = Array.from(bucket.values()).sort((a,b)=>a.date-b.date);
+
+  const dates = [];
+  const mean = [];
+  const median = [];
+  const n = [];
+
+  for(const m of months){
+    const vals = m.values.slice().sort((a,b)=>a-b);
+    const len = vals.length;
+    const mMean = vals.reduce((s,x)=>s+x,0) / len;
+    const mMedian = (len % 2 === 1)
+      ? vals[(len-1)/2]
+      : (vals[len/2 - 1] + vals[len/2]) / 2;
+
+    dates.push(m.date);
+    mean.push(mMean);
+    median.push(mMedian);
+    n.push(len);
+  }
+
+  return { dates, mean, median, n };
+}
+
+function rollingMean(arr, window, minPeriods){
+  const out = new Array(arr.length).fill(null);
+  let sum = 0;
+  let count = 0;
+  const q = []; // queue of {x, valid}
+  for(let i=0; i<arr.length; i++){
+    const x = arr[i];
+    const valid = Number.isFinite(x);
+    q.push({ x, valid });
+
+    if(valid){ sum += x; count += 1; }
+
+    if(q.length > window){
+      const old = q.shift();
+      if(old.valid){ sum -= old.x; count -= 1; }
+    }
+
+    if(count >= minPeriods){
+      out[i] = sum / count;
+    }
+  }
+  return out;
+}
+
+function safeLog(x){
+  if(!Number.isFinite(x) || x <= 0) return null;
+  return Math.log(x);
+}
+
+/**
+ * LOWESS/LOESS (Cleveland)
+ * - x: array of numbers (monotonic increasing recommended)
+ * - y: array of numbers
+ * - frac: bandwidth fraction in (0,1]
+ * Returns array of fitted yhat with same length (nulls where input invalid)
+ */
+function lowess(x, y, frac){
+  const n = x.length;
+  const yhat = new Array(n).fill(null);
+
+  // collect valid indices
+  const idx = [];
+  for(let i=0;i<n;i++){
+    if(Number.isFinite(x[i]) && Number.isFinite(y[i])) idx.push(i);
+  }
+  if(idx.length < 10) return yhat;
+
+  const m = idx.length;
+  const r = Math.max(2, Math.floor(frac * m));
+
+  // helper: weighted linear regression at point x0
+  function fitAt(k){
+    const i0 = idx[k];
+    const x0 = x[i0];
+
+    // choose neighborhood by x-distance
+    const distances = idx.map(j => ({ j, d: Math.abs(x[j] - x0) }))
+                         .sort((a,b)=>a.d-b.d)
+                         .slice(0, r);
+
+    const dmax = distances[distances.length - 1].d || 1;
+
+    // tricube weights
+    let sw=0, sx=0, sy=0, sxx=0, sxy=0;
+    for(const {j,d} of distances){
+      const u = d / dmax;
+      const w = Math.pow(1 - Math.pow(u,3), 3);
+      const xj = x[j], yj = y[j];
+      sw  += w;
+      sx  += w * xj;
+      sy  += w * yj;
+      sxx += w * xj * xj;
+      sxy += w * xj * yj;
+    }
+
+    const denom = (sw * sxx - sx * sx);
+    let a, b;
+    if(Math.abs(denom) < 1e-12){
+      // fallback: weighted mean
+      a = sy / (sw || 1);
+      b = 0;
+    }else{
+      b = (sw * sxy - sx * sy) / denom;
+      a = (sy - b * sx) / sw;
+    }
+
+    yhat[i0] = a + b * x0;
+  }
+
+  for(let k=0;k<m;k++) fitAt(k);
+  return yhat;
+}
+
+function computeChartHeights(){
+  // For Gutenberg 645px narrow block: keep a sensible aspect
+  const maxw = 645;
+  const page = document.querySelector(".page");
+  const w = Math.min(page.clientWidth, maxw);
+
+  // Main chart taller than ratio chart
+  const hMain = Math.round(clamp(w * 0.70, 360, 520));
+  const hRatio = Math.round(clamp(w * 0.45, 240, 360));
+  return { w, hMain, hRatio };
+}
+
+/* -----------------------------
+   Plotting
+------------------------------ */
+
+function render(rows){
+  clearError();
+
+  const mmaWindow = clamp(parseInt(document.getElementById("mmaWindow").value,10) || 24, 6, 60);
+  const frac = clamp(parseFloat(document.getElementById("loessFrac").value) || 0.18, 0.05, 0.50);
+
+  const { dates, mean, median, n } = groupMonthly(rows);
+
+  // 24M moving average (min 12 periods like your Python version)
+  const minPeriods = Math.min(12, mmaWindow);
+  const meanMMA = rollingMean(mean, mmaWindow, minPeriods);
+  const medianMMA = rollingMean(median, mmaWindow, minPeriods);
+
+  // time axis to numeric days
+  const t0 = dates[0].getTime();
+  const x = dates.map(d => (d.getTime() - t0) / (1000*60*60*24));
+
+  // LOESS on log(MMA)
+  const logMeanMMA = meanMMA.map(safeLog);
+  const logMedianMMA = medianMMA.map(safeLog);
+
+  const loessLogMean = lowess(x, logMeanMMA, frac);
+  const loessLogMedian = lowess(x, logMedianMMA, frac);
+
+  const loessMean = loessLogMean.map(v => Number.isFinite(v) ? Math.exp(v) : null);
+  const loessMedian = loessLogMedian.map(v => Number.isFinite(v) ? Math.exp(v) : null);
+
+  // Ratio (tail pressure proxy)
+  const ratio = meanMMA.map((v,i)=>{
+    const mm = medianMMA[i];
+    if(!Number.isFinite(v) || !Number.isFinite(mm) || mm<=0) return null;
+    return v / mm;
+  });
+
+  const { hMain, hRatio } = computeChartHeights();
+
+  // MAIN CHART
+  const tracesMain = [
+    {
+      x: dates, y: meanMMA,
+      type: "scatter", mode: "lines",
+      name: `Mean (${mmaWindow}M moving avg)`,
+      line: { width: 1 }
+    },
+    {
+      x: dates, y: medianMMA,
+      type: "scatter", mode: "lines",
+      name: `Median (${mmaWindow}M moving avg)`,
+      line: { width: 1 }
+    },
+    {
+      x: dates, y: loessMean,
+      type: "scatter", mode: "lines",
+      name: "LOESS regression on Mean MMA",
+      line: { width: 2 }
+    },
+    {
+      x: dates, y: loessMedian,
+      type: "scatter", mode: "lines",
+      name: "LOESS regression on Median MMA",
+      line: { width: 2 }
+    }
+  ];
+
+  const layoutMain = {
+    height: hMain,
+    margin: { l: 58, r: 18, t: 16, b: 48 },
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    showlegend: true,
+    legend: {
+      orientation: "h",
+      x: 0, xanchor: "left",
+      y: 1.12, yanchor: "top"
+    },
+    xaxis: {
+      title: "",
+      showgrid: true,
+      gridcolor: "rgba(0,0,0,0.08)",
+      tickformat: "%Y",
+      dtick: "M24" // every two years
+    },
+    yaxis: {
+      title: "GBP (log scale)",
+      type: "log",
+      showgrid: true,
+      gridcolor: "rgba(0,0,0,0.08)",
+      tickformat: ",.0f"
+    }
+  };
+
+  const config = {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"]
+  };
+
+  Plotly.newPlot("chartMain", tracesMain, layoutMain, config);
+
+  // RATIO CHART
+  const tracesRatio = [
+    {
+      x: dates, y: ratio,
+      type: "scatter", mode: "lines",
+      name: "Mean / Median (MMA)",
+      line: { width: 1.5 }
+    },
+    {
+      x: [dates[0], dates[dates.length-1]],
+      y: [1, 1],
+      type: "scatter", mode: "lines",
+      name: "1.0",
+      line: { width: 1, dash: "dot" },
+      hoverinfo: "skip"
+    }
+  ];
+
+  const layoutRatio = {
+    height: hRatio,
+    margin: { l: 58, r: 18, t: 16, b: 48 },
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    showlegend: false,
+    xaxis: {
+      title: "",
+      showgrid: true,
+      gridcolor: "rgba(0,0,0,0.08)",
+      tickformat: "%Y",
+      dtick: "M24"
+    },
+    yaxis: {
+      title: "Mean / Median (log)",
+      type: "log",
+      showgrid: true,
+      gridcolor: "rgba(0,0,0,0.08)"
+    }
+  };
+
+  Plotly.newPlot("chartRatio", tracesRatio, layoutRatio, config);
+
+  // Meta
+  const meta = document.getElementById("meta");
+  const first = dates[0].toISOString().slice(0,10);
+  const last  = dates[dates.length-1].toISOString().slice(0,10);
+  const totalLots = rows.length;
+  meta.textContent = `Rows loaded: ${totalLots.toLocaleString()} | Months: ${dates.length.toLocaleString()} | Range: ${first} → ${last}`;
+}
+
+/* -----------------------------
+   Demo + file upload wiring
+------------------------------ */
+
+function makeDemo(){
+  // tiny synthetic demo with log-normal-ish prices (not Picasso)
+  const rows = [];
+  const start = new Date(Date.UTC(2005,0,1));
+  for(let m=0;m<240;m++){
+    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth()+m, 1));
+    const n = 10 + Math.floor(Math.random()*15);
+    for(let i=0;i<n;i++){
+      // lognormal-ish
+      const base = 80000 * Math.exp(0.004*m);
+      const noise = Math.exp((Math.random()*1.2 - 0.6));
+      // occasional trophy
+      const trophy = (Math.random() < 0.02) ? (8 + Math.random()*10) : 1;
+      rows.push({ date: d, value: base * noise * trophy });
+    }
+  }
+  return rows;
+}
+
+document.getElementById("useDemo").addEventListener("click", () => {
+  try{
+    render(makeDemo());
+  }catch(e){
+    showError(e.message || String(e));
+  }
+});
+
+document.getElementById("fileInput").addEventListener("change", (ev) => {
+  const file = ev.target.files?.[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try{
+      const text = String(reader.result || "");
+      const rows = parseCSV(text);
+      render(rows);
+    }catch(e){
+      showError(e.message || String(e));
+    }
+  };
+  reader.onerror = () => showError("Could not read file.");
+  reader.readAsText(file);
+});
+
+// Re-render on parameter changes (if data already loaded)
+let lastRows = null;
+function tryRerender(){
+  if(!lastRows) return;
+  try{ render(lastRows); }catch(e){ showError(e.message || String(e)); }
+}
+
+const _render = render;
+render = function(rows){
+  lastRows = rows;
+  return _render(rows);
+};
+
+document.getElementById("mmaWindow").addEventListener("change", tryRerender);
+document.getElementById("loessFrac").addEventListener("change", tryRerender);
+
+// Resize handling
+window.addEventListener("resize", () => {
+  if(!lastRows) return;
+  tryRerender();
+});
+
+// Initial demo load
+render(makeDemo());
+</script>
+</body>
+</html>
