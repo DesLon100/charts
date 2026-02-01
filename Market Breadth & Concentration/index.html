@@ -16,7 +16,6 @@
       --text: #111;
       --muted: #666;
       --bg: #fff;
-      --btnbg: #f6f6f6;
     }
 
     body{
@@ -48,7 +47,7 @@
     .toolbar .left{
       display:flex;
       flex-wrap:wrap;
-      gap:10px;
+      gap:14px;
       align-items:center;
     }
 
@@ -63,14 +62,7 @@
 
     input[type="file"]{ font-size: 13px; }
 
-    .hint{
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.35;
-      margin: 8px 0 8px 0;
-    }
-
-    /* signal row (simple, no narrative text) */
+    /* signal row (simple + compact) */
     .signal{
       display:flex;
       flex-wrap:wrap;
@@ -113,12 +105,6 @@
       font-size:13px;
       color:#7a0000;
     }
-
-    .meta{
-      font-size:12px;
-      color: var(--muted);
-      margin-top: 8px;
-    }
   </style>
 </head>
 
@@ -132,7 +118,7 @@
         </label>
 
         <label>
-          MMA window (months):
+          MMA window:
           <input id="mmaWindow" type="number" min="6" max="60" value="24" style="width:70px;" />
         </label>
 
@@ -141,30 +127,16 @@
           <input id="loessFrac" type="number" min="0.05" max="0.50" step="0.01" value="0.18" style="width:70px;" />
         </label>
       </div>
-
-      <div class="right">
-        <button id="useDemo" style="padding:7px 10px;border:1px solid var(--border);background:var(--btnbg);border-radius:10px;cursor:pointer;">
-          Use demo data
-        </button>
-      </div>
-    </div>
-
-    <div class="hint">
-      CSV must include columns <b>Month</b> (YYYYMM) and <b>Value</b> (GBP). Example: Month=198306, Value=125000.
     </div>
 
     <div id="signalRow" class="signal">
-      <span class="label">Last 24 months signal:</span>
-      <span class="badge" id="sigMean">Mean: —</span>
-      <span class="badge" id="sigMedian">Median: —</span>
-      <span class="badge" id="sigGap">Gap: —</span>
+      <span class="label">Last 24 months:</span>
+      <span class="badge" id="sigSummary">—</span>
     </div>
 
     <div id="err" class="err"></div>
 
     <div id="chartMain" class="chart"></div>
-
-    <div id="meta" class="meta"></div>
   </div>
 
 <script>
@@ -212,7 +184,7 @@ function parseCSV(text){
     const date = new Date(Date.UTC(year, mon-1, 1));
     rows.push({ date, value: val });
   }
-  if(rows.length === 0) throw new Error("No valid rows parsed. Check Month (YYYYMM) and Value (numeric).");
+  if(rows.length === 0) throw new Error("No valid rows parsed.");
   rows.sort((a,b) => a.date - b.date);
   return rows;
 }
@@ -233,7 +205,6 @@ function groupMonthly(rows){
   const dates = [];
   const mean = [];
   const median = [];
-  const n = [];
 
   for(const m of months){
     const vals = m.values.slice().sort((a,b)=>a-b);
@@ -244,9 +215,8 @@ function groupMonthly(rows){
     dates.push(m.date);
     mean.push(mMean);
     median.push(mMedian);
-    n.push(len);
   }
-  return { dates, mean, median, n };
+  return { dates, mean, median };
 }
 
 function rollingMean(arr, window, minPeriods){
@@ -350,7 +320,6 @@ function formatTick(val){
 }
 
 function buildLogTicks(yMin, yMax){
-  // use 1-2-5 ticks per decade
   const bases = [1,2,5];
   const ticks = [];
   if(!(yMin>0) || !(yMax>0)) return { tickvals: [], ticktext: [] };
@@ -364,30 +333,36 @@ function buildLogTicks(yMin, yMax){
       if(v >= yMin * 0.98 && v <= yMax * 1.02) ticks.push(v);
     }
   }
-  // de-duplicate
   const tickvals = Array.from(new Set(ticks)).sort((a,b)=>a-b);
   const ticktext = tickvals.map(formatTick);
   return { tickvals, ticktext };
 }
 
-function setSignalBadges(meanMMA, medianMMA, dates){
-  // Use last 24 months (or as much as available) on the *MMA series*
-  const lookback = 24;
-  const eps = 0.02; // 2% deadband to avoid tiny flips
+/**
+ * Single, simple signal:
+ * - Is the mean/median gap widening or narrowing over last ~24 months (on MMA series)?
+ * - Which side is driving it: mean rising faster, or median falling/lagging?
+ */
+function setSignalSummary(meanMMA, medianMMA, dates){
+  const lookback = 24; // months
+  const eps = 0.02;    // 2% deadband for direction
 
-  const validIdx = [];
+  // valid indices
+  const valid = [];
   for(let i=0;i<dates.length;i++){
-    if(Number.isFinite(meanMMA[i]) && Number.isFinite(medianMMA[i])) validIdx.push(i);
+    if(Number.isFinite(meanMMA[i]) && Number.isFinite(medianMMA[i]) && meanMMA[i] > 0 && medianMMA[i] > 0){
+      valid.push(i);
+    }
   }
-  if(validIdx.length < 6){
-    document.getElementById("sigMean").innerHTML = "<b>Mean:</b> —";
-    document.getElementById("sigMedian").innerHTML = "<b>Median:</b> —";
-    document.getElementById("sigGap").innerHTML = "<b>Gap:</b> —";
+  const badge = document.getElementById("sigSummary");
+
+  if(valid.length < 6){
+    badge.textContent = "—";
     return;
   }
 
-  const end = validIdx[validIdx.length - 1];
-  const start = validIdx[Math.max(0, validIdx.length - lookback)];
+  const end = valid[valid.length - 1];
+  const start = valid[Math.max(0, valid.length - lookback)];
 
   const mean0 = meanMMA[start], mean1 = meanMMA[end];
   const med0  = medianMMA[start], med1  = medianMMA[end];
@@ -395,21 +370,37 @@ function setSignalBadges(meanMMA, medianMMA, dates){
   const gap0 = mean0 / med0;
   const gap1 = mean1 / med1;
 
-  function dir(a, b){
-    if(!Number.isFinite(a) || !Number.isFinite(b) || a<=0 || b<=0) return "—";
-    const chg = (b - a) / a;
+  const dGap = (gap1 - gap0) / gap0;
+  const dMean = (mean1 - mean0) / mean0;
+  const dMed  = (med1 - med0) / med0;
+
+  function arrow(chg){
     if(chg > eps) return "↑";
     if(chg < -eps) return "↓";
     return "→";
   }
 
-  const dMean = dir(mean0, mean1);
-  const dMed  = dir(med0, med1);
-  const dGap  = dir(gap0, gap1);
+  const gapArrow = arrow(dGap);
 
-  document.getElementById("sigMean").innerHTML  = `<b>Mean:</b> ${dMean}`;
-  document.getElementById("sigMedian").innerHTML= `<b>Median:</b> ${dMed}`;
-  document.getElementById("sigGap").innerHTML   = `<b>Gap:</b> ${dGap}`;
+  // Driver logic (kept blunt, not over-analytical)
+  // If gap is widening, it can be because mean is rising faster OR median is falling/lagging.
+  // If narrowing, median catching up OR mean easing.
+  let driver = "mixed";
+  if(Math.abs(dGap) <= eps){
+    driver = "stable";
+  }else if(dGap > eps){
+    // widening
+    if(dMean - dMed > 0.03) driver = "mean leading";
+    else if(dMed < -0.02) driver = "median weakening";
+    else driver = "mean outrunning median";
+  }else{
+    // narrowing
+    if(dMed - dMean > 0.03) driver = "median catching up";
+    else if(dMean < -0.02) driver = "mean easing";
+    else driver = "median outrunning mean";
+  }
+
+  badge.innerHTML = `<b>Gap:</b> ${gapArrow} &nbsp; <span style="color:var(--muted)">(${driver})</span>`;
 }
 
 /* -----------------------------
@@ -422,16 +413,16 @@ function render(rows){
   const mmaWindow = clamp(parseInt(document.getElementById("mmaWindow").value,10) || 24, 6, 60);
   const frac = clamp(parseFloat(document.getElementById("loessFrac").value) || 0.18, 0.05, 0.50);
 
-  const { dates, mean, median, n } = groupMonthly(rows);
+  const { dates, mean, median } = groupMonthly(rows);
 
   const minPeriods = Math.min(12, mmaWindow);
   const meanMMA = rollingMean(mean, mmaWindow, minPeriods);
   const medianMMA = rollingMean(median, mmaWindow, minPeriods);
 
-  // Signal badges (last 24 months)
-  setSignalBadges(meanMMA, medianMMA, dates);
+  // Single summary signal
+  setSignalSummary(meanMMA, medianMMA, dates);
 
-  // x numeric days
+  // numeric x for LOESS
   const t0 = dates[0].getTime();
   const xNum = dates.map(d => (d.getTime() - t0) / (1000*60*60*24));
 
@@ -445,7 +436,7 @@ function render(rows){
   const loessMean = loessLogMean.map(v => Number.isFinite(v) ? Math.exp(v) : null);
   const loessMedian = loessLogMedian.map(v => Number.isFinite(v) ? Math.exp(v) : null);
 
-  // y-range for nicer ticks
+  // y ticks (log, compact labels)
   const yVals = []
     .concat(meanMMA, medianMMA, loessMean, loessMedian)
     .filter(v => Number.isFinite(v) && v > 0);
@@ -457,30 +448,10 @@ function render(rows){
   const h = computeChartHeight();
 
   const traces = [
-    {
-      x: dates, y: meanMMA,
-      type: "scatter", mode: "lines",
-      name: `Mean (${mmaWindow}M moving avg)`,
-      line: { width: 1 }
-    },
-    {
-      x: dates, y: medianMMA,
-      type: "scatter", mode: "lines",
-      name: `Median (${mmaWindow}M moving avg)`,
-      line: { width: 1 }
-    },
-    {
-      x: dates, y: loessMean,
-      type: "scatter", mode: "lines",
-      name: "LOESS regression on Mean MMA",
-      line: { width: 2 }
-    },
-    {
-      x: dates, y: loessMedian,
-      type: "scatter", mode: "lines",
-      name: "LOESS regression on Median MMA",
-      line: { width: 2 }
-    }
+    { x: dates, y: meanMMA,   type:"scatter", mode:"lines", name:`Mean (${mmaWindow}M moving avg)`,   line:{width:1} },
+    { x: dates, y: medianMMA, type:"scatter", mode:"lines", name:`Median (${mmaWindow}M moving avg)`, line:{width:1} },
+    { x: dates, y: loessMean, type:"scatter", mode:"lines", name:"LOESS regression on Mean MMA",      line:{width:2} },
+    { x: dates, y: loessMedian,type:"scatter",mode:"lines", name:"LOESS regression on Median MMA",    line:{width:2} }
   ];
 
   const layout = {
@@ -501,7 +472,7 @@ function render(rows){
       showgrid: true,
       gridcolor: "rgba(0,0,0,0.08)",
       tickformat: "%Y",
-      dtick: "M24" // every two years
+      dtick: "M24"
     },
 
     yaxis: {
@@ -521,37 +492,11 @@ function render(rows){
   };
 
   Plotly.newPlot("chartMain", traces, layout, config);
-
-  // Meta
-  const meta = document.getElementById("meta");
-  const first = dates[0].toISOString().slice(0,10);
-  const last  = dates[dates.length-1].toISOString().slice(0,10);
-  meta.textContent = `Rows loaded: ${rows.length.toLocaleString()} | Months: ${dates.length.toLocaleString()} | Range: ${first} → ${last}`;
 }
 
 /* -----------------------------
-   Demo + file upload wiring
+   File upload + re-render wiring
 ------------------------------ */
-
-function makeDemo(){
-  const rows = [];
-  const start = new Date(Date.UTC(2005,0,1));
-  for(let m=0;m<240;m++){
-    const d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth()+m, 1));
-    const n = 10 + Math.floor(Math.random()*15);
-    for(let i=0;i<n;i++){
-      const base = 90000 * Math.exp(0.004*m);
-      const noise = Math.exp((Math.random()*1.2 - 0.6));
-      const trophy = (Math.random() < 0.02) ? (8 + Math.random()*10) : 1;
-      rows.push({ date: d, value: base * noise * trophy });
-    }
-  }
-  return rows;
-}
-
-document.getElementById("useDemo").addEventListener("click", () => {
-  try{ render(makeDemo()); }catch(e){ showError(e.message || String(e)); }
-});
 
 document.getElementById("fileInput").addEventListener("change", (ev) => {
   const file = ev.target.files?.[0];
@@ -571,7 +516,6 @@ document.getElementById("fileInput").addEventListener("change", (ev) => {
   reader.readAsText(file);
 });
 
-// Re-render on parameter changes (if data already loaded)
 let lastRows = null;
 const _render = render;
 render = function(rows){ lastRows = rows; return _render(rows); };
@@ -580,12 +524,12 @@ function tryRerender(){
   if(!lastRows) return;
   try{ render(lastRows); }catch(e){ showError(e.message || String(e)); }
 }
+
 document.getElementById("mmaWindow").addEventListener("change", tryRerender);
 document.getElementById("loessFrac").addEventListener("change", tryRerender);
 window.addEventListener("resize", tryRerender);
 
-// Initial load
-render(makeDemo());
+// No demo data auto-load; chart appears after CSV upload.
 </script>
 </body>
 </html>
