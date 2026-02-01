@@ -64,7 +64,6 @@
     statusEl.style.display = "none";
   }
 
-  // Show JS errors on-page (so it's never mysterious)
   window.addEventListener("error", (e) => {
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
   });
@@ -132,7 +131,6 @@
     }
   });
 
-  // Detect delimiter (comma/tab/semicolon) and parse header + rows
   function parseTable(text){
     const clean = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").trim();
     const lines = clean.split("\n").filter(l => l.trim().length);
@@ -172,23 +170,20 @@
   function parsePeriodStart(s){
     if (!s) return null;
 
-    // ISO: YYYY-MM-DD
     const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
     if (iso){
       const y = +iso[1], m = +iso[2], d = +iso[3];
       return new Date(Date.UTC(y, m - 1, d));
     }
 
-    // Slash: d/m/yyyy or m/d/yyyy (disambiguate for half-year starts)
     const sl = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
     if (sl){
       const a = +sl[1], b = +sl[2], y = +sl[3];
 
-      // Your periods should be Jan 1 or Jul 1.
       let day, month;
       if (a === 1 && (b === 1 || b === 7)) { day = 1; month = b; }
       else if (b === 1 && (a === 1 || a === 7)) { day = 1; month = a; }
-      else { day = a; month = b; } // fallback UK (day/month)
+      else { day = a; month = b; }
 
       if (month < 1 || month > 12) return null;
       return new Date(Date.UTC(y, month - 1, day));
@@ -198,7 +193,6 @@
   }
 
   function buildYearDividers(xDates){
-    // "Small dividers for missing years": draw faint vertical lines each Jan 1.
     const years = xDates.map(d => d.getUTCFullYear());
     const minY = Math.min(...years);
     const maxY = Math.max(...years);
@@ -221,86 +215,84 @@
   }
 
   function draw({ x, yI, yM, yL }){
-  const traces = [
-    // Legend label on the LEFT
-    {
-      x: [x[0]],
-      y: [0],
-      type: "scatter",
-      mode: "markers",
-      name: "Regimes:",
-      marker: { size: 0 },
-      hoverinfo: "skip",
-      showlegend: true
-    },
+    // IMPORTANT:
+    // Stack order is trace order (bottom -> top).
+    // Legend order is also trace order (left -> right).
+    //
+    // To keep the vertical stacking as:
+    //   bottom Illiquid, middle Intermediate, top Liquid
+    // ...we keep those traces in that order.
+    //
+    // To get "Liquidity regimes:" on the LEFT of the legend row,
+    // we DO NOT use a dummy trace (Plotly may push it around).
+    // Instead, we add an annotation above the plot area.
 
-    // Stack order (bottom → top)
-    {
-      x, y: yI,
-      type:"scatter",
-      mode:"lines",
-      name:"Illiquid (2–5)",
-      stackgroup:"one",
-      line:{ width:0.5 }
-    },
-    {
-      x, y: yM,
-      type:"scatter",
-      mode:"lines",
-      name:"Intermediate (6–19)",
-      stackgroup:"one",
-      line:{ width:0.5 }
-    },
-    {
-      x, y: yL,
-      type:"scatter",
-      mode:"lines",
-      name:"Liquid (≥20)",
-      stackgroup:"one",
-      line:{ width:0.5 }
-    }
-  ];
+    const traces = [
+      { x, y: yI, type:"scatter", mode:"lines", name:"Illiquid (2–5)",       stackgroup:"one", line:{ width:0.5 } },
+      { x, y: yM, type:"scatter", mode:"lines", name:"Intermediate (6–19)", stackgroup:"one", line:{ width:0.5 } },
+      { x, y: yL, type:"scatter", mode:"lines", name:"Liquid (≥20)",        stackgroup:"one", line:{ width:0.5 } }
+    ];
 
-  Plotly.newPlot("chart", traces, {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+    Plotly.newPlot("chart", traces, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
 
-    margin: { l: 88, r: 10, t: 44, b: 55 },
+      // Extra top margin to host the legend row and the label
+      margin: { l: 88, r: 10, t: 58, b: 55 },
 
-    yaxis: {
-      title: "Aggregated sold lots",
-      rangemode: "tozero",
-      zeroline: false
-    },
+      yaxis: {
+        title: "Aggregated sold lots",
+        rangemode: "tozero",
+        zeroline: false
+      },
 
-    xaxis: {
-      type: "date",
-      tickformat: "%Y",
-      dtick: "M24",
-      tick0: "2010-01-01",
-      automargin: true
-    },
+      xaxis: {
+        type: "date",
+        tickformat: "%Y",
+        dtick: "M24",        // every 2 years
+        tick0: "2010-01-01",
+        hoverformat: "%Y-%m-%d",
+        automargin: true
+      },
 
-    shapes: buildYearDividers(x),
+      // faint year dividers
+      shapes: buildYearDividers(x),
 
-    legend: {
-      orientation: "h",
-      x: 0,
-      y: 1.18,
-      xanchor: "left",
-      yanchor: "top",
-      bgcolor: "rgba(255,255,255,0.7)",
-      bordercolor: "rgba(0,0,0,0.15)",
-      borderwidth: 1,
-      font: { size: 12 }
-    }
+      // Legend row (left-to-right) above the plot
+      legend: {
+        orientation: "h",
+        x: 0.18,             // pushed right to make room for the label at left
+        y: 1.22,
+        xanchor: "left",
+        yanchor: "top",
+        bgcolor: "rgba(255,255,255,0.7)",
+        bordercolor: "rgba(0,0,0,0.15)",
+        borderwidth: 1,
+        font: { size: 12 }
+      },
 
-  }, {
-    displayModeBar: false,
-    responsive: true
-  });
-}
+      // Label on the same horizontal line as the legend
+      annotations: [{
+        text: "Liquidity regimes:",
+        xref: "paper",
+        yref: "paper",
+        x: 0,
+        y: 1.22,
+        xanchor: "left",
+        yanchor: "top",
+        showarrow: false,
+        font: { size: 12 },
+        bgcolor: "rgba(255,255,255,0.7)",
+        bordercolor: "rgba(0,0,0,0.15)",
+        borderwidth: 1,
+        borderpad: 4
+      }]
 
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+  }
 </script>
 </body>
 </html>
