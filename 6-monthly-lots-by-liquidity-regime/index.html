@@ -1,217 +1,239 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>6-monthly auction lots by liquidity regime (920 cohort)</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6-monthly auction lots by liquidity regime</title>
 
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
-  <style>
-    body{
-      margin:0;
-      padding:14px;
-      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-      background:#fff;
-    }
-    .page{ max-width:1200px; margin:0 auto; }
-    .toolbar{
-      display:flex; flex-wrap:wrap; gap:10px; align-items:center;
-      justify-content:space-between; margin-bottom:10px;
-    }
-    .toolbar .left{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .hint{ color:#555; font-size:13px; }
-    #chart{ width:100%; }
-    input[type="file"]{ font-size:14px; }
-    button{
-      border:1px solid #ccc; background:#f7f7f7; padding:6px 10px; border-radius:8px;
-      cursor:pointer;
-    }
-    button:hover{ background:#efefef; }
-  </style>
+<style>
+  body{
+    margin:0;
+    padding:14px;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:transparent;
+  }
+  .wrap{ max-width:645px; }
+
+  .controls{
+    display:flex;
+    gap:10px;
+    margin-bottom:10px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+
+  input[type="file"]{ height:40px; background:#fff; }
+
+  #chart{ width:100%; height:410px; }
+
+  #status{
+    margin-top:8px;
+    font-size:12px;
+    background:#fff;
+    padding:8px 10px;
+    border:1px solid #ddd;
+    border-radius:10px;
+    display:none;
+    white-space:pre-wrap;
+  }
+</style>
 </head>
-<body>
-  <div class="page">
-    <div class="toolbar">
-      <div class="left">
-        <input id="csvFile" type="file" accept=".csv,text/csv" />
-        <button id="demoBtn" type="button">Load demo (built-in)</button>
-      </div>
-      <div class="hint">
-        CSV columns required: <b>period_start</b>, <b>illiquid_2_5</b>, <b>intermediate_6_19</b>, <b>liquid_20_plus</b>
-      </div>
-    </div>
 
-    <div id="chart"></div>
+<body>
+<div class="wrap">
+  <div class="controls">
+    <input type="file" id="fileInput" accept=".csv,.txt,text/csv,text/plain">
   </div>
 
+  <div id="chart"></div>
+  <div id="status"></div>
+</div>
+
 <script>
-/* -------- helpers -------- */
+  const fileInput = document.getElementById("fileInput");
+  const statusEl  = document.getElementById("status");
 
-function parseCSV(text){
-  const lines = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").trim().split("\n");
-  if(lines.length < 2) throw new Error("CSV has no data rows.");
-
-  const header = lines[0].split(",").map(h => h.trim());
-  const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
-
-  const required = ["period_start","illiquid_2_5","intermediate_6_19","liquid_20_plus"];
-  for(const col of required){
-    if(!(col in idx)) throw new Error(`Missing column: ${col}`);
+  function status(msg){
+    statusEl.textContent = msg;
+    statusEl.style.display = "block";
+  }
+  function clearStatus(){
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
   }
 
-  const x = [];
-  const y1 = [], y2 = [], y3 = [];
+  // Show JS errors on-page (so it's never mysterious)
+  window.addEventListener("error", (e) => {
+    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+  });
 
-  for(let r=1; r<lines.length; r++){
-    if(!lines[r].trim()) continue;
-    const parts = lines[r].split(",").map(s => s.trim());
-
-    // Use period_start as x label; supports "YYYY-MM-DD" (recommended)
-    const ps = parts[idx.period_start];
-    x.push(ps);
-
-    y1.push(Number(parts[idx.illiquid_2_5] || 0));
-    y2.push(Number(parts[idx.intermediate_6_19] || 0));
-    y3.push(Number(parts[idx.liquid_20_plus] || 0));
+  if (typeof Plotly === "undefined") {
+    status("Plotly failed to load. Check internet or blocked scripts.");
+  } else {
+    status("Page loaded. Upload a CSV to render liquidity-regime bands.");
+    setTimeout(clearStatus, 1200);
   }
 
-  return { x, y1, y2, y3 };
-}
+  fileInput.addEventListener("change", async () => {
+    clearStatus();
+    const file = fileInput.files?.[0];
+    if (!file) return;
 
-function dynamicHeight(){
-  // Nice default for Gutenberg embeds too
-  const w = Math.min(document.querySelector(".page").clientWidth, 1200);
-  const h = Math.max(520, Math.round(w * 0.55));
-  return h;
-}
+    try{
+      const text = await file.text();
+      const parsed = parseTable(text);
 
-function renderChart({x,y1,y2,y3}){
-  const traces = [
-    {
-      x, y: y1,
-      type: "scatter",
-      mode: "lines",
-      name: "Illiquid (2–5)",
-      stackgroup: "one",
-      line: { width: 0.5 }
-    },
-    {
-      x, y: y2,
-      type: "scatter",
-      mode: "lines",
-      name: "Intermediate (6–19)",
-      stackgroup: "one",
-      line: { width: 0.5 }
-    },
-    {
-      x, y: y3,
-      type: "scatter",
-      mode: "lines",
-      name: "Liquid (≥20)",
-      stackgroup: "one",
-      line: { width: 0.5 }
+      // Validate required columns
+      const required = ["period_start","illiquid_2_5","intermediate_6_19","liquid_20_plus"];
+      for (const k of required){
+        if (!(k in parsed.idx)) throw new Error(`Missing column: ${k}`);
+      }
+
+      const x  = [];
+      const yI = [];
+      const yM = [];
+      const yL = [];
+
+      for (const row of parsed.rows){
+        // period_start as label: keep as-is, but strip time if present
+        let ps = String(row[parsed.idx.period_start] ?? "").trim();
+        ps = ps.replace(/T.*$/, "");           // ISO time
+        ps = ps.replace(/\s+\d\d:.*$/, "");    // " 00:00:00.000"
+        if (!ps) continue;
+
+        const ill = toNumber(row[parsed.idx.illiquid_2_5]);
+        const mid = toNumber(row[parsed.idx.intermediate_6_19]);
+        const liq = toNumber(row[parsed.idx.liquid_20_plus]);
+
+        x.push(ps);
+        yI.push(isFinite(ill) ? ill : 0);
+        yM.push(isFinite(mid) ? mid : 0);
+        yL.push(isFinite(liq) ? liq : 0);
+      }
+
+      if (!x.length){
+        Plotly.purge("chart");
+        status("No valid rows found.\nExpected columns:\nperiod_start, illiquid_2_5, intermediate_6_19, liquid_20_plus");
+        return;
+      }
+
+      status(
+        `Loaded ${parsed.rows.length} data rows\n` +
+        `Plotted ${x.length} half-year periods.\nRendering…`
+      );
+
+      draw({ x, yI, yM, yL });
+      setTimeout(clearStatus, 1500);
+
+    }catch(err){
+      console.error(err);
+      Plotly.purge("chart");
+      status("Error:\n" + (err?.message || String(err)));
     }
-  ];
+  });
 
-  const layout = {
-    title: {
-      text: "6-monthly auction lots by liquidity regime<br>920-artist cohort (since 2009)",
-      x: 0.5
-    },
-    height: dynamicHeight(),
-    margin: { l: 70, r: 20, t: 80, b: 60 },
-    xaxis: {
-      title: "Time (bi-annual)",
-      tickangle: 0,
-      automargin: true
-    },
-    yaxis: {
-      title: "Number of lots",
-      rangemode: "tozero"
-    },
-    legend: {
-      x: 0.02, y: 0.98,
-      bgcolor: "rgba(255,255,255,0.7)",
-      bordercolor: "rgba(0,0,0,0.15)",
-      borderwidth: 1
+  // Detect delimiter (comma/tab/semicolon) and parse header + rows
+  function parseTable(text){
+    const clean = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").trim();
+    const lines = clean.split("\n").filter(l => l.trim().length);
+    if (lines.length < 2) throw new Error("File has no data rows.");
+
+    const headerLine = lines[0];
+
+    const candidates = [",", "\t", ";"];
+    let delim = ",";
+    let best = -1;
+    for (const d of candidates){
+      const c = headerLine.split(d).length;
+      if (c > best){ best = c; delim = d; }
     }
-  };
 
-  const config = {
-    responsive: true,
-    displaylogo: false
-  };
+    const header = headerLine.split(delim).map(s => s.trim());
+    const idx = Object.fromEntries(header.map((h,i)=>[h,i]));
 
-  Plotly.newPlot("chart", traces, layout, config);
-}
+    const rows = [];
+    for (let i=1; i<lines.length; i++){
+      const parts = lines[i].split(delim);
+      // pad if short
+      while (parts.length < header.length) parts.push("");
+      rows.push(parts.map(s => String(s).trim()));
+    }
 
-// Handle resizing cleanly
-window.addEventListener("resize", () => {
-  const gd = document.getElementById("chart");
-  if(gd && gd.data){
-    Plotly.relayout(gd, { height: dynamicHeight() });
+    return { header, idx, rows, delim };
   }
-});
 
-/* -------- wiring -------- */
-
-document.getElementById("csvFile").addEventListener("change", async (ev) => {
-  const file = ev.target.files?.[0];
-  if(!file) return;
-
-  const text = await file.text();
-  try{
-    const data = parseCSV(text);
-    renderChart(data);
-  }catch(err){
-    alert(err.message || String(err));
+  function toNumber(v){
+    const s = String(v ?? "").trim();
+    if (!s) return NaN;
+    // handle "1,234" and currency symbols
+    const cleaned = s.replace(/£/g,"").replace(/\s/g,"").replace(/,/g,"");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
   }
-});
 
-// Built-in demo so the page never loads blank
-document.getElementById("demoBtn").addEventListener("click", () => {
-  const demoCSV =
-`period_start,illiquid_2_5,intermediate_6_19,liquid_20_plus
-2009-01-01,1200,2700,2100
-2009-07-01,1100,2900,1700
-2010-01-01,1250,2800,2300
-2010-07-01,1150,3000,1900
-2011-01-01,1050,3100,2500
-2011-07-01,1150,3050,1800
-2012-01-01,1100,3200,2100
-2012-07-01,1200,3150,2000
-2013-01-01,1120,3300,1900
-2013-07-01,1200,3250,2200
-2014-01-01,1100,3400,2100
-2014-07-01,1150,3350,2300
-2015-01-01,1180,3300,2550
-2015-07-01,1100,3350,1900
-2016-01-01,1200,3250,2500
-2016-07-01,1080,3300,1950
-2017-01-01,1120,3000,2900
-2017-07-01,1100,3100,2400
-2018-01-01,1080,2950,2600
-2018-07-01,1120,2850,2600
-2019-01-01,1050,2900,2500
-2019-07-01,1200,2750,2300
-2020-01-01,1000,1800,600
-2020-07-01,1150,2600,2400
-2021-01-01,1200,2500,2000
-2021-07-01,1100,2900,2200
-2022-01-01,1050,3050,2000
-2022-07-01,1150,3000,2100
-2023-01-01,1180,2950,2250
-2023-07-01,1220,2900,2150
-2024-01-01,1250,2850,2100
-2024-07-01,1275,2800,2050
-2025-01-01,1300,2750,1900
-2025-07-01,1325,2850,1800`;
-  renderChart(parseCSV(demoCSV));
-});
+  function draw({ x, yI, yM, yL }){
+    const traces = [
+      {
+        x, y: yI,
+        type: "scatter",
+        mode: "lines",
+        name: "Illiquid (2–5)",
+        stackgroup: "one",
+        line: { width: 0.5 }
+      },
+      {
+        x, y: yM,
+        type: "scatter",
+        mode: "lines",
+        name: "Intermediate (6–19)",
+        stackgroup: "one",
+        line: { width: 0.5 }
+      },
+      {
+        x, y: yL,
+        type: "scatter",
+        mode: "lines",
+        name: "Liquid (≥20)",
+        stackgroup: "one",
+        line: { width: 0.5 }
+      }
+    ];
 
-// initial render
-document.getElementById("demoBtn").click();
+    Plotly.newPlot("chart", traces, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 70, r: 10, t: 60, b: 55 },
+
+      title: {
+        text: "6-monthly auction lots by liquidity regime<br>920-artist cohort (since 2009)",
+        x: 0.5
+      },
+
+      yaxis: {
+        title: "Number of lots",
+        rangemode: "tozero",
+        zeroline: false
+      },
+
+      xaxis: {
+        title: "Time (bi-annual)",
+        tickangle: 0,
+        automargin: true
+      },
+
+      legend: {
+        x: 0.02, y: 0.98,
+        bgcolor: "rgba(255,255,255,0.7)",
+        bordercolor: "rgba(0,0,0,0.15)",
+        borderwidth: 1
+      }
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+  }
 </script>
 </body>
 </html>
