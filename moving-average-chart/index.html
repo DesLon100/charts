@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Monthly Moving Average</title>
 
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-
 <style>
   body{
     margin:0;
@@ -52,7 +50,7 @@
     padding:8px 10px;
     border:1px solid #ddd;
     border-radius:10px;
-    display:none;
+    display:block;          /* IMPORTANT: always visible until chart draws */
     white-space:pre-wrap;
   }
 </style>
@@ -72,7 +70,7 @@
   </div>
 
   <div id="chart"></div>
-  <div id="status"></div>
+  <div id="status">Starting…</div>
 </div>
 
 <script>
@@ -80,14 +78,8 @@
   const windowSelect = document.getElementById("windowSelect");
   const statusEl = document.getElementById("status");
 
-  function status(msg){
-    statusEl.textContent = msg;
-    statusEl.style.display = "block";
-  }
-  function clearStatus(){
-    statusEl.textContent = "";
-    statusEl.style.display = "none";
-  }
+  function status(msg){ statusEl.textContent = msg; }
+  function clearStatus(){ statusEl.textContent = ""; statusEl.style.display = "none"; }
 
   window.addEventListener("error", (e) => {
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
@@ -97,21 +89,63 @@
     status("Unhandled promise rejection:\n" + msg);
   });
 
-  if (typeof Plotly === "undefined") {
-    status("Plotly failed to load ❌\nThis usually means the CDN is blocked.\nTry a different network, or I can give you a self-hosted Plotly option.");
-  } else {
-    status("Ready ✅ Upload a CSV.");
-    setTimeout(clearStatus, 1200);
+  // ---- Plotly loader with fallback CDNs ----
+  async function loadScript(src){
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = true;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("Failed to load: " + src));
+      document.head.appendChild(s);
+    });
   }
 
+  async function ensurePlotly(){
+    if (typeof Plotly !== "undefined") return true;
+
+    const cdns = [
+      "https://cdn.plot.ly/plotly-2.35.2.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js",
+      "https://unpkg.com/plotly.js-dist-min@2.35.2/plotly.min.js"
+    ];
+
+    for (const url of cdns){
+      try{
+        status("Loading Plotly…\n" + url);
+        await loadScript(url);
+        if (typeof Plotly !== "undefined"){
+          status("Plotly loaded ✅");
+          return true;
+        }
+      } catch (e){
+        // try next
+      }
+    }
+
+    status(
+      "Plotly failed to load ❌\n" +
+      "This is usually caused by an ad-blocker, strict corporate network policy, or blocked CDNs.\n" +
+      "Try disabling blockers for this page, or use a different network."
+    );
+    return false;
+  }
+
+  // Call immediately
+  ensurePlotly();
+
+  // ---- Data + chart code ----
   let monthlyCalendar = [];
 
   fileInput.addEventListener("change", async () => {
-    clearStatus();
     const file = fileInput.files?.[0];
     if (!file) return;
 
+    const ok = await ensurePlotly();
+    if (!ok) return;
+
     try {
+      status("Reading CSV…");
       const text = await file.text();
       const rows = parseCSV(text);
 
@@ -126,12 +160,11 @@
       status(
         `CSV loaded ✅\n` +
         `Raw rows: ${rows.length}\n` +
-        `Calendar months built: ${monthlyCalendar.length} (missing months filled with 0)\n` +
+        `Calendar months: ${monthlyCalendar.length} (missing months filled with 0)\n` +
         `Rendering…`
       );
 
       draw();
-      setTimeout(clearStatus, 1800);
 
     } catch (err) {
       console.error(err);
@@ -140,12 +173,13 @@
     }
   });
 
-  windowSelect.addEventListener("change", () => {
+  windowSelect.addEventListener("change", async () => {
     if (!monthlyCalendar.length) return;
+    const ok = await ensurePlotly();
+    if (!ok) return;
     draw();
   });
 
-  // --- CSV parsing ---
   function parseCSV(text){
     const rows = [];
     let row = [];
@@ -174,9 +208,7 @@
     row.push(cur);
     if (row.some(c => String(c).trim() !== "")) rows.push(row);
 
-    // Drop header if it looks like one
     if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
-
     return rows;
   }
 
@@ -211,7 +243,6 @@
 
     for (const r of rows){
       if (!Array.isArray(r) || r.length < 2) continue;
-
       const d = parseYYYYMM(r[0]);
       const v = toNumber(r[1]);
       if (!d || !isFinite(v)) continue;
@@ -233,7 +264,7 @@
     for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)){
       const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
       const agg = byMonth.get(key);
-      const value = agg ? (agg.sum / agg.n) : 0; // missing month = 0
+      const value = agg ? (agg.sum / agg.n) : 0;
       out.push({ date: new Date(d), value });
     }
     return out;
@@ -255,7 +286,6 @@
     return out;
   }
 
-  // 3× smoothing: trailing average over the MA series
   function trailingAvgStrictOnSeries(series, k){
     const out = new Array(series.length);
     let runningSum = 0;
@@ -292,9 +322,6 @@
   }
 
   function draw(){
-    if (!monthlyCalendar.length) return;
-    if (typeof Plotly === "undefined") return;
-
     const n = Number(windowSelect.value);
 
     const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
@@ -306,7 +333,7 @@
     if (!hasBase){
       Plotly.purge("chart");
       status(
-        `Not enough data to compute a ${n}-month rolling average.\n` +
+        `Not enough data for ${n}-month rolling average.\n` +
         `Calendar months available: ${monthlyCalendar.length}\n` +
         `Need at least: ${n}`
       );
@@ -316,12 +343,10 @@
     if (!hasSmooth){
       status(
         `Base MA is available, but 3× smoothing needs more months.\n` +
-        `For ${n}-month + 3× smoothing you need at least: ${n + 2} calendar months.\n` +
+        `For ${n}-month + 3× smoothing you need at least: ${n + 2} months.\n` +
         `You have: ${monthlyCalendar.length}\n\n` +
-        `Showing base ${n}-month avg only.`
+        `Showing base MA only.`
       );
-    } else {
-      clearStatus();
     }
 
     const traces = [];
@@ -359,4 +384,19 @@
       xaxis: {
         type: "date",
         tickformat: "%Y",
-        dtick:
+        dtick: "M60",
+        tick0: "1975-01-01",
+        hoverformat: "%Y-%m"
+      }
+    }, {
+      displayModeBar: false,
+      responsive: true
+    });
+
+    // Only clear status once we successfully draw a chart
+    if (hasSmooth) clearStatus();
+  }
+</script>
+
+</body>
+</html>
