@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Monthly Moving Average (Compare 2 Datasets)</title>
 
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-
 <style>
   body{
     margin:0;
@@ -15,19 +13,22 @@
     background:transparent;
   }
   .wrap{max-width:645px;}
-.controls{
-  display:flex;
-  gap:8px;                 /* tighter spacing */
-  margin-bottom:10px;
-  flex-wrap:nowrap;        /* keep everything on one line */
-  align-items:center;
-}
+
+  .controls{
+    display:flex;
+    gap:8px;                 /* tighter spacing */
+    margin-bottom:10px;
+    flex-wrap:nowrap;        /* keep everything on one line */
+    align-items:center;
+  }
+
   input[type="file"]{
-  height:40px;
-  background:#fff;
-  max-width:200px;         /* KEY: prevents wrapping */
-  font-size:12px;
-}
+    height:40px;
+    background:#fff;
+    max-width:200px;         /* prevents wrapping */
+    font-size:12px;
+  }
+
   select{
     height:40px;
     border-radius:10px;
@@ -36,7 +37,9 @@
     padding:0 12px;
     font-size:14px;
   }
+
   #chart{width:100%;height:380px;}
+
   #status{
     margin-top:8px;
     font-size:12px;
@@ -85,19 +88,61 @@
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
   });
 
-  let seriesA = null; // {label, monthlyCalendar:[{date,value}], ma:[{date,value}]}
+  // -------- Plotly loader with fallback CDNs (same as your working single-series file) --------
+  async function loadScript(src){
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = true;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error("Failed to load: " + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function ensurePlotly(){
+    if (typeof Plotly !== "undefined") return true;
+
+    const cdns = [
+      "https://cdn.plot.ly/plotly-2.35.2.min.js",
+      "https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js",
+      "https://unpkg.com/plotly.js-dist-min@2.35.2/plotly.min.js"
+    ];
+
+    for (const url of cdns){
+      try{
+        await loadScript(url);
+        if (typeof Plotly !== "undefined") return true;
+      } catch (e) {}
+    }
+
+    status("Plotly failed to load.\nCheck blockers or network policy.");
+    return false;
+  }
+
+  ensurePlotly();
+
+  // Each series stores: { label, monthlyCalendar, smooth }
+  let seriesA = null;
   let seriesB = null;
 
   fileA.addEventListener("change", () => loadFile("A"));
   fileB.addEventListener("change", () => loadFile("B"));
+
   windowSelect.addEventListener("change", () => {
-    if (seriesA) seriesA.ma = trailingAvgStrictCalendar(seriesA.monthlyCalendar, Number(windowSelect.value));
-    if (seriesB) seriesB.ma = trailingAvgStrictCalendar(seriesB.monthlyCalendar, Number(windowSelect.value));
+    const n = Number(windowSelect.value);
+
+    if (seriesA) seriesA.smooth = computeSmoothedSeries(seriesA.monthlyCalendar, n);
+    if (seriesB) seriesB.smooth = computeSmoothedSeries(seriesB.monthlyCalendar, n);
+
     draw();
   });
 
   async function loadFile(which){
     clearStatus();
+
+    const ok = await ensurePlotly();
+    if (!ok) return;
 
     const input = (which === "A") ? fileA : fileB;
     const file = input.files?.[0];
@@ -107,28 +152,42 @@
       const text = await file.text();
       const rows = parseCSV(text);
       const monthlyCalendar = buildMonthlyCalendar(rows); // missing months = 0
+
       if (!monthlyCalendar.length){
-        status(`Dataset ${which}: no valid rows found. Expected Column A=YYYYMM, Column B=Value.`);
+        status(`Dataset ${which}: no valid rows found.\nExpected CSV: Column A=YYYYMM, Column B=Value.`);
         return;
       }
 
       const n = Number(windowSelect.value);
-      const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
+      const smooth = computeSmoothedSeries(monthlyCalendar, n);
+
+      if (!smooth.some(d => d.value !== null && Number.isFinite(d.value))){
+        status(
+          `Dataset ${which}: loaded (${file.name}) but not enough months to compute smoothed series.\n` +
+          `Need at least ${n + 2} calendar months.`
+        );
+        // Still store it; draw() will simply not show a line until it has values
+      }
 
       const obj = {
-        label: file.name.replace(/\.[^.]+$/, ""), // filename without extension
+        label: file.name.replace(/\.[^.]+$/, ""),
         monthlyCalendar,
-        ma
+        smooth
       };
 
       if (which === "A") seriesA = obj;
       else seriesB = obj;
 
-      status(`Loaded ${which}: ${obj.label}\nCalendar months: ${monthlyCalendar.length}\nNow upload the other file (optional) or view the overlay.`);
+      status(
+        `Loaded ${which}: ${obj.label}\n` +
+        `Calendar months: ${monthlyCalendar.length}\n` +
+        `Now upload the other file (optional) or view the overlay.`
+      );
       setTimeout(clearStatus, 1600);
 
       draw();
-    }catch(err){
+
+    } catch(err){
       console.error(err);
       status(`Error loading Dataset ${which}:\n` + (err?.message || String(err)));
     }
@@ -226,54 +285,88 @@
     return out;
   }
 
-  // Strict calendar MA: always N months, divide by N, starts once full window exists
-  function trailingAvgStrictCalendar(data, n){
+  // ---- NEW smoothing: average of trailing 3 N-month MA windows (implemented via sums) ----
+  function rollingSumsStrict(data, n){
     const out = new Array(data.length);
     let runningSum = 0;
-
     for (let i=0;i<data.length;i++){
       runningSum += data[i].value;
       if (i >= n) runningSum -= data[i-n].value;
 
       out[i] = {
         date: data[i].date,
-        value: (i < n-1) ? null : (runningSum / n)
+        sum: (i < n-1) ? null : runningSum
       };
     }
     return out;
   }
 
+  // Smooth_t = (S_t + S_{t-1} + S_{t-2}) / (3n)
+  function smoothFromSums(roll, n){
+    return roll.map((d,i)=>({
+      date: d.date,
+      value: (d.sum != null && roll[i-1]?.sum != null && roll[i-2]?.sum != null)
+        ? (d.sum + roll[i-1].sum + roll[i-2].sum) / (3 * n)
+        : null
+    }));
+  }
+
+  function computeSmoothedSeries(monthlyCalendar, n){
+    const roll = rollingSumsStrict(monthlyCalendar, n);
+    return smoothFromSums(roll, n);
+  }
+
   function draw(){
     const traces = [];
-
     const n = Number(windowSelect.value);
 
     if (seriesA){
-      traces.push({
-        x: seriesA.ma.map(d=>d.date),
-        y: seriesA.ma.map(d=>d.value),
-        type: "scatter",
-        mode: "lines",
-        name: `${seriesA.label} (${n}m)`
-      });
+      const yA = seriesA.smooth.map(d=>d.value);
+      const hasA = yA.some(v => v !== null && Number.isFinite(v));
+      if (hasA){
+        traces.push({
+          x: seriesA.smooth.map(d=>d.date),
+          y: yA,
+          type: "scatter",
+          mode: "lines",
+          line: { width: 2 },
+          name: `${seriesA.label} (${n}m)`
+        });
+      }
     }
 
     if (seriesB){
-      traces.push({
-        x: seriesB.ma.map(d=>d.date),
-        y: seriesB.ma.map(d=>d.value),
-        type: "scatter",
-        mode: "lines",
-        name: `${seriesB.label} (${n}m)`
-      });
+      const yB = seriesB.smooth.map(d=>d.value);
+      const hasB = yB.some(v => v !== null && Number.isFinite(v));
+      if (hasB){
+        traces.push({
+          x: seriesB.smooth.map(d=>d.date),
+          y: yB,
+          type: "scatter",
+          mode: "lines",
+          line: { width: 2 },
+          name: `${seriesB.label} (${n}m)`
+        });
+      }
     }
 
     if (!traces.length){
       Plotly.purge("chart");
+      // Only show status if at least one series is loaded but has no drawable values
+      if (seriesA || seriesB){
+        status(
+          `No drawable values yet.\n` +
+          `Remember: smoothed series needs at least ${n + 2} calendar months.\n` +
+          `Try a shorter window (e.g. 12-month).`
+        );
+      }
       return;
     }
 
+    clearStatus();
+
     Plotly.newPlot("chart", traces, {
+      showlegend: false,                 // no chart key/legend
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       margin: { l: 75, r: 10, t: 10, b: 45 },
@@ -291,9 +384,7 @@
         dtick: "M60",
         tick0: "1975-01-01",
         hoverformat: "%Y-%m"
-      },
-
-      legend: { orientation: "h", x: 0, y: -0.25 }
+      }
     }, {
       displayModeBar: false,
       responsive: true
