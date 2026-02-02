@@ -12,9 +12,18 @@
     margin: 0;
     padding: 14px;
     font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    background: transparent;
+    background: #fff; /* TEMP: force visible */
   }
   .wrap { max-width: 645px; }
+
+  .boot {
+    background: #fffbcc;
+    border: 1px solid #e6d56a;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
 
   .controls {
     display: flex;
@@ -34,7 +43,7 @@
     font-size: 14px;
   }
 
-  #chart { width: 100%; height: 360px; }
+  #chart { width: 100%; height: 360px; border: 1px dashed #ddd; border-radius: 10px; }
 
   #status {
     margin-top: 8px;
@@ -43,7 +52,7 @@
     padding: 8px 10px;
     border: 1px solid #ddd;
     border-radius: 10px;
-    display: none;
+    display: block; /* TEMP: always visible */
     white-space: pre-wrap;
   }
 </style>
@@ -51,6 +60,10 @@
 
 <body>
 <div class="wrap">
+
+  <!-- This should ALWAYS show if the HTML is the one you uploaded -->
+  <div class="boot" id="htmlBoot">HTML LOADED ✅ (if you can see this, you are viewing the correct file)</div>
+
   <div class="controls">
     <input type="file" id="fileInput" accept=".csv">
     <select id="windowSelect">
@@ -61,36 +74,40 @@
   </div>
 
   <div id="chart"></div>
-  <div id="status"></div>
+  <div id="status">Status box visible ✅ (JS will update this)</div>
+
+  <noscript>
+    <div class="boot">JavaScript is disabled in this browser/session.</div>
+  </noscript>
 </div>
 
 <script>
-  const fileInput = document.getElementById("fileInput");
-  const windowSelect = document.getElementById("windowSelect");
+  // If you see this message appear, JS is definitely running.
   const statusEl = document.getElementById("status");
+  statusEl.textContent = "JS RUNNING ✅ (now load a CSV)";
 
-  function status(msg) {
-    statusEl.textContent = msg;
-    statusEl.style.display = "block";
-  }
-  function clearStatus() {
-    statusEl.textContent = "";
-    statusEl.style.display = "none";
-  }
-
-  // Show any JS errors ON the page (no more guessing)
   window.addEventListener("error", (e) => {
-    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+    statusEl.textContent = "JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || "");
   });
 
-  // Also catch promise rejections
   window.addEventListener("unhandledrejection", (e) => {
     const msg = (e && e.reason && (e.reason.message || String(e.reason))) || "Unknown rejection";
-    status("Unhandled promise rejection:\n" + msg);
+    statusEl.textContent = "Unhandled promise rejection:\n" + msg;
   });
 
   if (typeof Plotly === "undefined") {
-    status("Plotly failed to load. Check your internet or blocked scripts.");
-  } else {
-    status("Page loaded. Upload a CSV to render the chart.");
-    setTimeout(clearStatus, 1200);
+    statusEl.textContent = "Plotly failed to load ❌ (blocked CDN or no internet).";
+  }
+
+  // Minimal file-load test (just to prove the input fires)
+  const fileInput = document.getElementById("fileInput");
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    statusEl.textContent = "CSV selected ✅\nFirst 200 chars:\n" + text.slice(0, 200);
+  });
+</script>
+
+</body>
+</html>
