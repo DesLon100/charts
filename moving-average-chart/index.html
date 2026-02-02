@@ -14,15 +14,6 @@
   }
   .wrap{ max-width:645px; }
 
-  .boot{
-    background:#fffbcc;
-    border:1px solid #e6d56a;
-    border-radius:10px;
-    padding:10px 12px;
-    margin-bottom:10px;
-    font-size:13px;
-  }
-
   .controls{
     display:flex;
     gap:10px;
@@ -50,7 +41,7 @@
     padding:8px 10px;
     border:1px solid #ddd;
     border-radius:10px;
-    display:block;          /* IMPORTANT: always visible until chart draws */
+    display:none;
     white-space:pre-wrap;
   }
 </style>
@@ -58,7 +49,6 @@
 
 <body>
 <div class="wrap">
-  <div class="boot">HTML LOADED ✅ (if you can see this, you are viewing the correct file)</div>
 
   <div class="controls">
     <input type="file" id="fileInput" accept=".csv">
@@ -70,33 +60,35 @@
   </div>
 
   <div id="chart"></div>
-  <div id="status">Starting…</div>
+  <div id="status"></div>
+
 </div>
 
 <script>
-  const fileInput = document.getElementById("fileInput");
+  const fileInput   = document.getElementById("fileInput");
   const windowSelect = document.getElementById("windowSelect");
-  const statusEl = document.getElementById("status");
+  const statusEl    = document.getElementById("status");
 
-  function status(msg){ statusEl.textContent = msg; }
-  function clearStatus(){ statusEl.textContent = ""; statusEl.style.display = "none"; }
+  function status(msg){
+    statusEl.textContent = msg;
+    statusEl.style.display = "block";
+  }
+  function clearStatus(){
+    statusEl.textContent = "";
+    statusEl.style.display = "none";
+  }
 
-  window.addEventListener("error", (e) => {
-    status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
+  window.addEventListener("error", e => {
+    status("JS error:\n" + (e.message || e.type));
   });
-  window.addEventListener("unhandledrejection", (e) => {
-    const msg = (e && e.reason && (e.reason.message || String(e.reason))) || "Unknown rejection";
-    status("Unhandled promise rejection:\n" + msg);
-  });
 
-  // ---- Plotly loader with fallback CDNs ----
+  // -------- Plotly loader (with fallback CDNs) --------
   async function loadScript(src){
     return new Promise((resolve, reject) => {
       const s = document.createElement("script");
       s.src = src;
-      s.async = true;
       s.onload = resolve;
-      s.onerror = () => reject(new Error("Failed to load: " + src));
+      s.onerror = reject;
       document.head.appendChild(s);
     });
   }
@@ -112,289 +104,180 @@
 
     for (const url of cdns){
       try{
-        status("Loading Plotly…\n" + url);
         await loadScript(url);
-        if (typeof Plotly !== "undefined"){
-          status("Plotly loaded ✅");
-          return true;
-        }
-      } catch (e){
-        // try next
-      }
+        if (typeof Plotly !== "undefined") return true;
+      } catch(e){}
     }
 
-    status(
-      "Plotly failed to load ❌\n" +
-      "This is usually caused by an ad-blocker, strict corporate network policy, or blocked CDNs.\n" +
-      "Try disabling blockers for this page, or use a different network."
-    );
+    status("Plotly failed to load.\nCheck blockers or network policy.");
     return false;
   }
 
-  // Call immediately
   ensurePlotly();
 
-  // ---- Data + chart code ----
   let monthlyCalendar = [];
 
   fileInput.addEventListener("change", async () => {
+    const ok = await ensurePlotly();
+    if (!ok) return;
+
     const file = fileInput.files?.[0];
     if (!file) return;
 
-    const ok = await ensurePlotly();
-    if (!ok) return;
-
-    try {
-      status("Reading CSV…");
+    try{
       const text = await file.text();
       const rows = parseCSV(text);
-
       monthlyCalendar = buildMonthlyCalendar(rows);
 
-      if (!monthlyCalendar.length) {
+      if (!monthlyCalendar.length){
         Plotly.purge("chart");
-        status("No valid rows found.\nExpected CSV columns: Month (YYYYMM), Value.");
+        status("No valid rows found.\nExpected: YYYYMM, Value");
         return;
       }
 
-      status(
-        `CSV loaded ✅\n` +
-        `Raw rows: ${rows.length}\n` +
-        `Calendar months: ${monthlyCalendar.length} (missing months filled with 0)\n` +
-        `Rendering…`
-      );
-
       draw();
+      clearStatus();
 
-    } catch (err) {
-      console.error(err);
+    } catch(err){
       Plotly.purge("chart");
-      status("Error reading CSV:\n" + (err?.message || String(err)));
+      status("CSV read error:\n" + err.message);
     }
   });
 
-  windowSelect.addEventListener("change", async () => {
+  windowSelect.addEventListener("change", () => {
     if (!monthlyCalendar.length) return;
-    const ok = await ensurePlotly();
-    if (!ok) return;
     draw();
   });
 
+  // -------- CSV parsing --------
   function parseCSV(text){
     const rows = [];
-    let row = [];
-    let cur = "";
-    let inQuotes = false;
+    let row = [], cur = "", inQuotes = false;
 
-    for (let i = 0; i < text.length; i++){
-      const ch = text[i];
-      const next = text[i + 1];
-
-      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
-      if (ch === '"') { inQuotes = !inQuotes; continue; }
-
-      if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
-
-      if ((ch === "\n" || ch === "\r") && !inQuotes){
-        if (ch === "\r" && next === "\n") i++;
-        row.push(cur); cur = "";
-        if (row.some(c => String(c).trim() !== "")) rows.push(row);
-        row = [];
+    for (let i=0;i<text.length;i++){
+      const ch = text[i], next = text[i+1];
+      if (ch === '"' && inQuotes && next === '"'){ cur+='"'; i++; continue; }
+      if (ch === '"'){ inQuotes=!inQuotes; continue; }
+      if (ch === "," && !inQuotes){ row.push(cur); cur=""; continue; }
+      if ((ch==="\n"||ch==="\r")&&!inQuotes){
+        if (ch==="\r"&&next==="\n") i++;
+        row.push(cur); cur="";
+        if (row.some(c=>c.trim()!=="")) rows.push(row);
+        row=[];
         continue;
       }
-      cur += ch;
+      cur+=ch;
     }
-
     row.push(cur);
-    if (row.some(c => String(c).trim() !== "")) rows.push(row);
+    if (row.some(c=>c.trim()!=="")) rows.push(row);
 
-    if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
+    if (rows.length && /month/i.test(rows[0][0]||"")) rows.shift();
     return rows;
   }
 
   function toNumber(v){
-    if (typeof v === "number") return v;
-    const s = String(v ?? "").trim();
-    if (!s) return NaN;
-    const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
-    const n = Number(cleaned);
+    const n = Number(String(v).replace(/[£,\s]/g,""));
     return Number.isFinite(n) ? n : NaN;
   }
 
   function parseYYYYMM(v){
-    const s = String(v ?? "").trim();
-    if (!s) return null;
-    const digits = s.replace(/\D/g, "");
-    if (digits.length < 6) return null;
-
-    const y = Number(digits.slice(0, 4));
-    const m = Number(digits.slice(4, 6));
-    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
-
-    return new Date(Date.UTC(y, m - 1, 1));
+    const d = String(v).replace(/\D/g,"");
+    if (d.length < 6) return null;
+    const y = +d.slice(0,4), m = +d.slice(4,6);
+    if (m<1||m>12) return null;
+    return new Date(Date.UTC(y,m-1,1));
   }
 
-  function addMonthsUTC(dateUTC, n){
-    return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
+  function addMonthsUTC(d,n){
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+n, 1));
   }
 
   function buildMonthlyCalendar(rows){
     const byMonth = new Map();
 
     for (const r of rows){
-      if (!Array.isArray(r) || r.length < 2) continue;
+      if (r.length<2) continue;
       const d = parseYYYYMM(r[0]);
       const v = toNumber(r[1]);
-      if (!d || !isFinite(v)) continue;
+      if (!d||!isFinite(v)) continue;
 
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
-      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
-      cur.sum += v;
-      cur.n += 1;
-      byMonth.set(key, cur);
+      const k = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      const cur = byMonth.get(k)||{sum:0,n:0,date:d};
+      cur.sum+=v; cur.n++;
+      byMonth.set(k,cur);
     }
+    if (!byMonth.size) return [];
 
-    if (byMonth.size === 0) return [];
-
-    const monthDates = Array.from(byMonth.values()).map(x => x.date).sort((a,b) => a - b);
-    const minMonth = monthDates[0];
-    const maxMonth = monthDates[monthDates.length - 1];
-
-    const out = [];
-    for (let d = new Date(minMonth); d <= maxMonth; d = addMonthsUTC(d, 1)){
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
-      const agg = byMonth.get(key);
-      const value = agg ? (agg.sum / agg.n) : 0;
-      out.push({ date: new Date(d), value });
+    const dates = [...byMonth.values()].map(x=>x.date).sort((a,b)=>a-b);
+    const out=[];
+    for (let d=new Date(dates[0]); d<=dates.at(-1); d=addMonthsUTC(d,1)){
+      const k = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      const a = byMonth.get(k);
+      out.push({date:new Date(d), value:a? a.sum/a.n : 0});
     }
     return out;
   }
 
-  function trailingAvgStrictCalendar(data, n){
-    const out = new Array(data.length);
-    let runningSum = 0;
-
-    for (let i = 0; i < data.length; i++){
-      runningSum += data[i].value;
-      if (i >= n) runningSum -= data[i - n].value;
-
-      out[i] = {
-        date: data[i].date,
-        value: (i < n - 1) ? null : (runningSum / n)
-      };
+  // -------- rolling sums & smoothing --------
+  function rollingSums(data,n){
+    const out=[], q=[];
+    let sum=0;
+    for (let i=0;i<data.length;i++){
+      sum+=data[i].value;
+      q.push(data[i].value);
+      if (q.length>n) sum-=q.shift();
+      out.push({date:data[i].date, sum:(i>=n-1)?sum:null});
     }
     return out;
   }
 
-  function trailingAvgStrictOnSeries(series, k){
-    const out = new Array(series.length);
-    let runningSum = 0;
-    let validCount = 0;
-    const q = [];
-
-    for (let i = 0; i < series.length; i++){
-      const v = series[i].value;
-      q.push(v);
-
-      if (v !== null && Number.isFinite(v)){
-        runningSum += v;
-        validCount += 1;
-      }
-
-      if (q.length > k){
-        const old = q.shift();
-        if (old !== null && Number.isFinite(old)){
-          runningSum -= old;
-          validCount -= 1;
-        }
-      }
-
-      out[i] = {
-        date: series[i].date,
-        value: (q.length < k || validCount < k) ? null : (runningSum / k)
-      };
-    }
-    return out;
-  }
-
-  function anyNonNull(series){
-    return series.some(d => d.value !== null && Number.isFinite(d.value));
+  function smooth3(roll,n){
+    return roll.map((d,i)=>({
+      date:d.date,
+      value:(d.sum!=null&&roll[i-1]?.sum!=null&&roll[i-2]?.sum!=null)
+        ? (d.sum+roll[i-1].sum+roll[i-2].sum)/(3*n)
+        : null
+    }));
   }
 
   function draw(){
-    const n = Number(windowSelect.value);
+    const n = +windowSelect.value;
+    const roll = rollingSums(monthlyCalendar,n);
+    const smooth = smooth3(roll,n);
 
-    const ma = trailingAvgStrictCalendar(monthlyCalendar, n);
-    const maSmoothed = trailingAvgStrictOnSeries(ma, 3);
-
-    const hasBase = anyNonNull(ma);
-    const hasSmooth = anyNonNull(maSmoothed);
-
-    if (!hasBase){
+    if (!smooth.some(d=>d.value!=null)){
       Plotly.purge("chart");
-      status(
-        `Not enough data for ${n}-month rolling average.\n` +
-        `Calendar months available: ${monthlyCalendar.length}\n` +
-        `Need at least: ${n}`
-      );
+      status(`Not enough data.\nNeed at least ${n+2} months.`);
       return;
     }
 
-    if (!hasSmooth){
-      status(
-        `Base MA is available, but 3× smoothing needs more months.\n` +
-        `For ${n}-month + 3× smoothing you need at least: ${n + 2} months.\n` +
-        `You have: ${monthlyCalendar.length}\n\n` +
-        `Showing base MA only.`
-      );
-    }
-
-    const traces = [];
-
-    if (hasSmooth){
-      traces.push({
-        x: maSmoothed.map(d => d.date),
-        y: maSmoothed.map(d => d.value),
-        type: "scatter",
-        mode: "lines",
-        line: { width: 2 },
-        name: `${n}-month avg (3× smoothed)`
-      });
-    }
-
-    traces.push({
-      x: ma.map(d => d.date),
-      y: ma.map(d => d.value),
-      type: "scatter",
-      mode: "lines",
-      line: { width: 1, dash: "dot" },
-      name: `${n}-month avg`
-    });
-
-    Plotly.newPlot("chart", traces, {
-      paper_bgcolor: "rgba(0,0,0,0)",
-      plot_bgcolor: "rgba(0,0,0,0)",
-      margin: { l: 75, r: 10, t: 10, b: 45 },
-      yaxis: {
-        title: "GBP",
-        tickprefix: "£",
-        tickformat: "~s",
-        zeroline: false
+    Plotly.newPlot("chart", [{
+      x: smooth.map(d=>d.date),
+      y: smooth.map(d=>d.value),
+      type:"scatter",
+      mode:"lines",
+      line:{width:2}
+    }],{
+      showlegend:false,
+      paper_bgcolor:"rgba(0,0,0,0)",
+      plot_bgcolor:"rgba(0,0,0,0)",
+      margin:{l:75,r:10,t:10,b:45},
+      yaxis:{
+        title:"GBP",
+        tickprefix:"£",
+        tickformat:"~s",
+        zeroline:false
       },
-      xaxis: {
-        type: "date",
-        tickformat: "%Y",
-        dtick: "M60",
-        tick0: "1975-01-01",
-        hoverformat: "%Y-%m"
+      xaxis:{
+        type:"date",
+        tickformat:"%Y",
+        dtick:"M60",
+        hoverformat:"%Y-%m"
       }
-    }, {
-      displayModeBar: false,
-      responsive: true
+    },{
+      displayModeBar:false,
+      responsive:true
     });
-
-    // Only clear status once we successfully draw a chart
-    if (hasSmooth) clearStatus();
   }
 </script>
 
