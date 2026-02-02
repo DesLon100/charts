@@ -36,7 +36,6 @@
 
   #chart { width: 100%; height: 360px; }
 
-  /* Debug/status box (white, so Gutenberg background can show through chart only) */
   #status {
     margin-top: 8px;
     font-size: 12px;
@@ -84,133 +83,14 @@
     status("JS error:\n" + (e.message || e.type) + "\n" + (e.filename || "") + ":" + (e.lineno || ""));
   });
 
+  // Also catch promise rejections
+  window.addEventListener("unhandledrejection", (e) => {
+    const msg = (e && e.reason && (e.reason.message || String(e.reason))) || "Unknown rejection";
+    status("Unhandled promise rejection:\n" + msg);
+  });
+
   if (typeof Plotly === "undefined") {
     status("Plotly failed to load. Check your internet or blocked scripts.");
   } else {
     status("Page loaded. Upload a CSV to render the chart.");
     setTimeout(clearStatus, 1200);
-  }
-
-  let monthlyCalendar = []; // continuous calendar months, missing months filled with 0
-
-  fileInput.addEventListener("change", async () => {
-    clearStatus();
-    const file = fileInput.files?.[0];
-    if (!file) return;
-
-    try {
-      const text = await file.text();
-      const rows = parseCSV(text);
-
-      monthlyCalendar = buildMonthlyCalendar(rows);
-
-      if (!monthlyCalendar.length) {
-        Plotly.purge("chart");
-        status("No valid rows found.\nExpected CSV: Column A=YYYYMM, Column B=Value.");
-        return;
-      }
-
-      status(`Loaded ${rows.length} rows → built ${monthlyCalendar.length} calendar months (missing months = 0).\nRendering…`);
-      draw();
-      setTimeout(clearStatus, 1500);
-
-    } catch (err) {
-      console.error(err);
-      Plotly.purge("chart");
-      status("Error reading CSV:\n" + (err?.message || String(err)));
-    }
-  });
-
-  windowSelect.addEventListener("change", () => {
-    if (!monthlyCalendar.length) return;
-    draw();
-  });
-
-  // --- Robust CSV parser (handles quotes and commas inside quotes) ---
-  function parseCSV(text) {
-    const rows = [];
-    let row = [];
-    let cur = "";
-    let inQuotes = false;
-
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      const next = text[i + 1];
-
-      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
-      if (ch === '"') { inQuotes = !inQuotes; continue; }
-
-      if (ch === "," && !inQuotes) { row.push(cur); cur = ""; continue; }
-
-      if ((ch === "\n" || ch === "\r") && !inQuotes) {
-        if (ch === "\r" && next === "\n") i++;
-        row.push(cur); cur = "";
-        if (row.some(c => String(c).trim() !== "")) rows.push(row);
-        row = [];
-        continue;
-      }
-
-      cur += ch;
-    }
-
-    row.push(cur);
-    if (row.some(c => String(c).trim() !== "")) rows.push(row);
-
-    // Drop header if it looks like one
-    if (rows.length && /month/i.test(String(rows[0][0] || ""))) rows.shift();
-
-    return rows;
-  }
-
-  function toNumber(v) {
-    if (typeof v === "number") return v;
-    const s = String(v ?? "").trim();
-    if (!s) return NaN;
-    const cleaned = s.replace(/£/g, "").replace(/\s/g, "").replace(/,/g, "");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : NaN;
-  }
-
-  function parseYYYYMM(v) {
-    const s = String(v ?? "").trim();
-    if (!s) return null;
-    const digits = s.replace(/\D/g, "");
-    if (digits.length < 6) return null;
-
-    const y = Number(digits.slice(0, 4));
-    const m = Number(digits.slice(4, 6));
-    if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) return null;
-
-    return new Date(Date.UTC(y, m - 1, 1));
-  }
-
-  function addMonthsUTC(dateUTC, n) {
-    return new Date(Date.UTC(dateUTC.getUTCFullYear(), dateUTC.getUTCMonth() + n, 1));
-  }
-
-  // 1) aggregate multiple rows per month → mean
-  // 2) create continuous calendar months min→max; missing months → 0
-  function buildMonthlyCalendar(rows) {
-    const byMonth = new Map(); // key YYYY-MM -> {sum, n, date}
-
-    for (const r of rows) {
-      if (!Array.isArray(r) || r.length < 2) continue;
-
-      const d = parseYYYYMM(r[0]); // Column A
-      const v = toNumber(r[1]);    // Column B
-      if (!d || !isFinite(v)) continue;
-
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
-      const cur = byMonth.get(key) || { sum: 0, n: 0, date: d };
-      cur.sum += v;
-      cur.n += 1;
-      byMonth.set(key, cur);
-    }
-
-    if (byMonth.size === 0) return [];
-
-    const monthDates = Array.from(byMonth.values()).map(x => x.date).sort((a,b) => a - b);
-    const minMonth = monthDates[0];
-    const maxMonth = monthDates[monthDates.length - 1];
-
-    const o
