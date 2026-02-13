@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Group Index + Contributors (UMV 12M, LOCF, Rebase)</title>
+  <title>Group Index + Top 3 Artists (UMV 12M, LOCF, Rebase)</title>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
@@ -15,11 +15,17 @@
       background:transparent;
       color:#111;
     }
-    .wrap{max-width:980px;margin:0 auto;}
+
+    /* Gutenberg narrow block friendly */
+    .wrap{
+      max-width:645px;   /* KEY: fits narrow Gutenberg */
+      margin:0 auto;
+    }
+
     .controls{
       display:flex;
-      gap:10px;
-      flex-wrap:wrap;
+      gap:8px;
+      flex-wrap:nowrap;
       align-items:center;
       margin-bottom:10px;
     }
@@ -29,6 +35,7 @@
       border:1px solid #ddd;
       border-radius:10px;
       background:#fff;
+      max-width:260px;
     }
     button{
       height:40px;
@@ -37,36 +44,33 @@
       border-radius:10px;
       background:#fff;
       cursor:pointer;
+      white-space:nowrap;
     }
     button:hover{border-color:#bbb;}
+
     .meta{
       font-size:13px;
       color:#444;
-      margin:6px 0 14px;
+      margin:6px 0 12px;
       line-height:1.35;
     }
-    .grid{
-      display:grid;
-      grid-template-columns: 1fr;
-      gap:12px;
-    }
-    @media (min-width: 900px){
-      .grid{grid-template-columns: 2fr 1fr;}
-    }
+
     #chart{
       border:1px solid #eee;
       border-radius:14px;
       padding:6px;
       background:#fff;
     }
+
     .panel{
+      margin-top:12px;
       border:1px solid #eee;
       border-radius:14px;
       padding:12px;
       background:#fff;
     }
     .panel h3{
-      margin:0 0 10px;
+      margin:0 0 8px;
       font-size:14px;
     }
     .small{
@@ -105,28 +109,27 @@
   <div class="wrap">
     <div class="controls">
       <input id="file" type="file" accept=".csv,text/csv" />
-      <button id="btnContrib" disabled>Show contributors (latest month)</button>
+      <button id="btnTop" disabled>Show top 3 by value (latest UMV)</button>
       <button id="btnReset" disabled>Reset</button>
     </div>
 
     <div class="meta" id="meta">
       Upload a CSV exported from SQL with columns: <b>ArtistID</b>, <b>MonthYYYYMM</b>, <b>ValueGBP</b>.
-      This builds a pooled group index using: monthly average → LOCF → 12M rolling UMV → rebased to 1000 at 197601.
+      The chart builds the pooled group index using: monthly average → LOCF → 12M rolling UMV → rebased to 1000 at 197601.
     </div>
 
-    <div class="grid">
-      <div id="chart"></div>
-      <div class="panel">
-        <h3>
-          Contributors
-          <span class="pill" id="pillMonth">—</span>
-        </h3>
-        <p class="small">
-          v1 ranks artists by the absolute change in the <i>latest month’s</i> group index level when that artist’s datapoints are removed
-          (fast leave-one-out on monthly pooled averages before LOCF + UMV).
-        </p>
-        <div id="contrib"></div>
-      </div>
+    <div id="chart"></div>
+
+    <div class="panel">
+      <h3>
+        Top artists by value
+        <span class="pill" id="pillMonth">—</span>
+      </h3>
+      <p class="small">
+        Ranking uses each artist’s <b>latest 12-month UMV</b> in GBP (monthly average → LOCF → 12M UMV).
+        The overlay lines are rebased to 1000 at 197601 so you can compare trajectories side-by-side.
+      </p>
+      <div id="topTable"><div class="muted">Upload data and click the button.</div></div>
     </div>
   </div>
 
@@ -137,24 +140,25 @@
  */
 
 function parseCSV(text){
-  // Minimal CSV parser (handles simple comma-separated numeric fields).
-  // Expects header row.
   const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim().length);
   if(lines.length < 2) throw new Error("CSV looks empty.");
   const headers = lines[0].split(',').map(h=>h.trim());
+
   const idxArtist = headers.findIndex(h => /^artistid$/i.test(h));
-  const idxMonth   = headers.findIndex(h => /^monthyyyymm$/i.test(h) || /^month$/i.test(h));
-  const idxValue   = headers.findIndex(h => /^valuegbp$/i.test(h) || /^data$/i.test(h));
+  const idxMonth  = headers.findIndex(h => /^monthyyyymm$/i.test(h) || /^month$/i.test(h));
+  const idxValue  = headers.findIndex(h => /^valuegbp$/i.test(h) || /^data$/i.test(h));
+
   if(idxArtist === -1 || idxMonth === -1 || idxValue === -1){
     throw new Error("CSV must include headers: ArtistID, MonthYYYYMM (or Month), ValueGBP (or data).");
   }
+
   const rows = [];
   for(let i=1;i<lines.length;i++){
     const parts = lines[i].split(',');
     if(parts.length < Math.max(idxArtist, idxMonth, idxValue)+1) continue;
     const artist = parseInt(parts[idxArtist],10);
-    const month = parseInt(parts[idxMonth],10);
-    const value = parseFloat(parts[idxValue]);
+    const month  = parseInt(parts[idxMonth],10);
+    const value  = parseFloat(parts[idxValue]);
     if(!Number.isFinite(artist) || !Number.isFinite(month) || !Number.isFinite(value)) continue;
     rows.push({artist, month, value});
   }
@@ -163,7 +167,7 @@ function parseCSV(text){
 
 function monthToDate(monthYYYYMM){
   const y = Math.floor(monthYYYYMM/100);
-  const m = (monthYYYYMM % 100) - 1; // 0-index
+  const m = (monthYYYYMM % 100) - 1;
   return new Date(Date.UTC(y, m, 1));
 }
 
@@ -185,7 +189,6 @@ function buildMonthSpine(minMonth, maxMonth){
 }
 
 function locfFill(spine, monthToValue){
-  // Returns array aligned to spine. Fills missing with last seen.
   const out = new Array(spine.length).fill(null);
   let last = null;
   for(let i=0;i<spine.length;i++){
@@ -194,7 +197,7 @@ function locfFill(spine, monthToValue){
       last = monthToValue.get(m);
       out[i] = last;
     }else{
-      out[i] = last; // can remain null until first observation
+      out[i] = last; // LOCF
     }
   }
   return out;
@@ -204,7 +207,7 @@ function rollingMean(arr, window){
   const out = new Array(arr.length).fill(null);
   let sum = 0;
   let count = 0;
-  const q = []; // store values for window
+  const q = [];
   for(let i=0;i<arr.length;i++){
     const v = arr[i];
     q.push(v);
@@ -217,8 +220,6 @@ function rollingMean(arr, window){
         sum -= old; count -= 1;
       }
     }
-    // AMR-style: calendar window always 12 months; with LOCF we expect non-null after first.
-    // Still guard: if count==0, keep null.
     out[i] = (count > 0 ? sum / count : null);
   }
   return out;
@@ -233,19 +234,15 @@ function rebaseTo1000(spine, umvArr, baseMonth){
 }
 
 /** -----------------------------------------
- *  Core: pooled monthly avg from raw datapts
+ *  Group index: pooled monthly avg from raw
  *  -----------------------------------------
  */
 
-function computePooledMonthlyAverage(rows){
-  // returns Map(month -> {sum, count})
-  const map = new Map();
+function computePooledMonthlySumCount(rows){
+  const map = new Map(); // month -> {sum,count}
   for(const r of rows){
     let o = map.get(r.month);
-    if(!o){
-      o = {sum:0, count:0};
-      map.set(r.month, o);
-    }
+    if(!o){ o = {sum:0, count:0}; map.set(r.month, o); }
     o.sum += r.value;
     o.count += 1;
   }
@@ -261,7 +258,7 @@ function monthlyAvgMapFromSumCount(sumCountMap){
 }
 
 function computeGroupIndex(rows, baseMonth=197601, window=12){
-  const sc = computePooledMonthlyAverage(rows);
+  const sc = computePooledMonthlySumCount(rows);
   const months = Array.from(sc.keys()).sort((a,b)=>a-b);
   const minMonth = months[0];
   const maxMonth = months[months.length-1];
@@ -272,86 +269,55 @@ function computeGroupIndex(rows, baseMonth=197601, window=12){
   const umv = rollingMean(filled, window);
   const idx = rebaseTo1000(spine, umv, baseMonth);
 
-  return {spine, monthAvg, filled, umv, idx, sc};
+  return {spine, idx, umv, monthAvg};
 }
 
-/** ------------------------------------------------
- *  Contributors (v1): fast leave-one-out on monthly
- *  ------------------------------------------------
- *  We compute:
- *    Group monthly sum/count  (already have)
- *    Each artist monthly sum/count
- *  Then for each artist we produce "pooled monthly avg excluding artist"
- *  and run LOCF + UMV + rebase, and measure impact on latest index value.
+/** -----------------------------------------
+ *  Artist UMV: monthly avg -> LOCF -> 12M UMV
+ *  -----------------------------------------
  */
 
-function computeArtistMonthSumCount(rows){
-  // Map(artist -> Map(month -> {sum,count}))
-  const out = new Map();
-  for(const r of rows){
-    let m = out.get(r.artist);
-    if(!m){ m = new Map(); out.set(r.artist, m); }
-    let sc = m.get(r.month);
-    if(!sc){ sc = {sum:0, count:0}; m.set(r.month, sc); }
-    sc.sum += r.value;
-    sc.count += 1;
-  }
-  return out;
-}
+function computeSingleArtistUMV(rows, artistID, window=12){
+  const artistRows = rows.filter(r => r.artist === artistID);
+  if(artistRows.length === 0) return null;
 
-function computeIndexFromSumCount(groupSC, spine, baseMonth=197601, window=12){
-  // groupSC: Map(month -> {sum,count})
-  // spine: full calendar month list
-  const monthAvg = new Map();
-  for(const m of spine){
-    const sc = groupSC.get(m);
-    if(sc && sc.count > 0) monthAvg.set(m, sc.sum / sc.count);
+  const sc = new Map(); // month -> {sum,count}
+  for(const r of artistRows){
+    let o = sc.get(r.month);
+    if(!o){ o = {sum:0, count:0}; sc.set(r.month,o); }
+    o.sum += r.value;
+    o.count += 1;
   }
+
+  const months = Array.from(sc.keys()).sort((a,b)=>a-b);
+  const spine = buildMonthSpine(months[0], months[months.length-1]);
+
+  const monthAvg = new Map();
+  for(const [m,o] of sc.entries()){
+    if(o.count > 0) monthAvg.set(m, o.sum/o.count);
+  }
+
   const filled = locfFill(spine, monthAvg);
   const umv = rollingMean(filled, window);
-  const idx = rebaseTo1000(spine, umv, baseMonth);
-  return {idx, umv};
+
+  return {spine, umv};
 }
 
-function topContributorsLatest(rows, groupObj, baseMonth=197601, window=12, topN=10){
-  const {spine, sc: groupSC, idx: groupIdx} = groupObj;
-  const latestIdxVal = groupIdx[groupIdx.length-1];
-  const latestMonth = spine[spine.length-1];
+function topArtistsByLatestUMV(rows, window=12, topN=3){
+  const artists = [...new Set(rows.map(r => r.artist))];
+  const ranked = [];
 
-  const byArtist = computeArtistMonthSumCount(rows);
-  const artists = Array.from(byArtist.keys()).sort((a,b)=>a-b);
-
-  const results = [];
   for(const artist of artists){
-    // Build adjusted group sum/count excluding this artist month-by-month
-    const artistSC = byArtist.get(artist);
-
-    const adj = new Map();
-    for(const m of spine){
-      const g = groupSC.get(m) || {sum:0,count:0};
-      const a = artistSC.get(m) || {sum:0,count:0};
-      const sum = g.sum - a.sum;
-      const count = g.count - a.count;
-      if(count > 0){
-        adj.set(m, {sum, count});
-      }else{
-        // no transactions left that month -> treat as missing for LOCF
-        // by leaving it absent (monthAvg missing), LOCF will fill
-      }
-    }
-
-    const {idx: idxEx} = computeIndexFromSumCount(adj, spine, baseMonth, window);
-    const exVal = idxEx[idxEx.length-1];
-
-    if(Number.isFinite(latestIdxVal) && Number.isFinite(exVal)){
-      const impactSigned = latestIdxVal - exVal;
-      const impactAbs = Math.abs(impactSigned);
-      results.push({artist, impactSigned, impactAbs});
+    const obj = computeSingleArtistUMV(rows, artist, window);
+    if(!obj) continue;
+    const latest = obj.umv[obj.umv.length - 1];
+    if(Number.isFinite(latest)){
+      ranked.push({artist, latestUMV: latest, obj});
     }
   }
 
-  results.sort((a,b)=>b.impactAbs - a.impactAbs);
-  return {latestMonth, latestIdxVal, rows: results.slice(0, topN)};
+  ranked.sort((a,b)=>b.latestUMV - a.latestUMV);
+  return ranked.slice(0, topN);
 }
 
 /** ---------------------------
@@ -359,23 +325,10 @@ function topContributorsLatest(rows, groupObj, baseMonth=197601, window=12, topN
  *  ---------------------------
  */
 
-function drawChart(groupObj){
-  const {spine, idx} = groupObj;
-
-  const x = spine.map(monthToDate);
-  const y = idx;
-
-  const trace = {
-    x, y,
-    type:'scatter',
-    mode:'lines',
-    line:{width:2},
-    hovertemplate:'%{x|%b %Y}<br>Index: %{y:.1f}<extra></extra>',
-    name:'Group Index (rebased 1000)'
-  };
-
+function plotTraces(traces){
   const layout = {
-    margin:{l:55,r:15,t:10,b:40},
+    height: 650, // Taller for readability inside narrow Gutenberg
+    margin:{l:65,r:20,t:20,b:60},
     paper_bgcolor:'rgba(0,0,0,0)',
     plot_bgcolor:'#fff',
     xaxis:{
@@ -388,12 +341,28 @@ function drawChart(groupObj){
       showgrid:true,
       zeroline:false
     },
-    showlegend:false
+    showlegend:true,
+    legend:{
+      orientation:'h',
+      y:-0.25
+    }
   };
 
   const config = {responsive:true, displayModeBar:false};
+  Plotly.react('chart', traces, layout, config);
+}
 
-  Plotly.newPlot('chart', [trace], layout, config);
+function drawGroupOnly(groupObj){
+  const trace = {
+    x: groupObj.spine.map(monthToDate),
+    y: groupObj.idx,
+    type:'scatter',
+    mode:'lines',
+    line:{width:3},
+    name:'Group Index',
+    hovertemplate:'%{x|%b %Y}<br>Index: %{y:.1f}<extra></extra>'
+  };
+  plotTraces([trace]);
 }
 
 /** ---------------------------
@@ -405,10 +374,10 @@ let RAW = null;
 let GROUP = null;
 
 const fileEl = document.getElementById('file');
-const btnContrib = document.getElementById('btnContrib');
+const btnTop = document.getElementById('btnTop');
 const btnReset = document.getElementById('btnReset');
 const meta = document.getElementById('meta');
-const contrib = document.getElementById('contrib');
+const topTable = document.getElementById('topTable');
 const pillMonth = document.getElementById('pillMonth');
 
 fileEl.addEventListener('change', async (e) => {
@@ -419,73 +388,90 @@ fileEl.addEventListener('change', async (e) => {
   try{
     RAW = parseCSV(text);
 
-    if(RAW.length < 1000){
-      meta.innerHTML = `Loaded <b>${RAW.length.toLocaleString()}</b> rows. That seems low for a full index export — but I'll proceed.`;
-    }else{
-      meta.innerHTML = `Loaded <b>${RAW.length.toLocaleString()}</b> raw datapoints. Building pooled group index (monthly avg → LOCF → UMV 12M → rebase 197601).`;
-    }
+    meta.innerHTML =
+      `Loaded <b>${RAW.length.toLocaleString()}</b> raw datapoints. Building pooled group index (monthly avg → LOCF → UMV 12M → rebase 197601).`;
 
     GROUP = computeGroupIndex(RAW, 197601, 12);
-    drawChart(GROUP);
+    drawGroupOnly(GROUP);
 
-    btnContrib.disabled = false;
+    btnTop.disabled = false;
     btnReset.disabled = false;
 
-    contrib.innerHTML = `<div class="muted">Press “Show contributors” to rank artists by their impact on the latest index level.</div>`;
-    pillMonth.textContent = `${Math.floor(GROUP.spine[GROUP.spine.length-1]/100)}-${String(GROUP.spine[GROUP.spine.length-1]%100).padStart(2,'0')}`;
+    const lastM = GROUP.spine[GROUP.spine.length-1];
+    pillMonth.textContent = `${Math.floor(lastM/100)}-${String(lastM%100).padStart(2,'0')}`;
+
+    topTable.innerHTML = `<div class="muted">Click “Show top 3 by value” to overlay the rebased lines.</div>`;
   }catch(err){
     meta.innerHTML = `<span style="color:#b00020"><b>Error:</b> ${err.message}</span>`;
-    btnContrib.disabled = true;
+    btnTop.disabled = true;
     btnReset.disabled = true;
-    contrib.innerHTML = '';
+    topTable.innerHTML = '';
     pillMonth.textContent = '—';
+    Plotly.purge('chart');
   }
 });
 
-btnContrib.addEventListener('click', () => {
+btnTop.addEventListener('click', () => {
   if(!RAW || !GROUP) return;
 
-  btnContrib.disabled = true;
-  btnContrib.textContent = 'Working…';
+  btnTop.disabled = true;
+  btnTop.textContent = 'Working…';
 
-  // run in a timeout so UI updates first
   setTimeout(() => {
     try{
-      const {latestMonth, latestIdxVal, rows} = topContributorsLatest(RAW, GROUP, 197601, 12, 10);
+      const top = topArtistsByLatestUMV(RAW, 12, 3);
 
-      pillMonth.textContent = `${Math.floor(latestMonth/100)}-${String(latestMonth%100).padStart(2,'0')}`;
+      const traces = [];
 
+      // Group (already rebased)
+      traces.push({
+        x: GROUP.spine.map(monthToDate),
+        y: GROUP.idx,
+        type:'scatter',
+        mode:'lines',
+        line:{width:3},
+        name:'Group Index'
+      });
+
+      // Table HTML
       let html = `
-        <div class="small">
-          Latest index level: <b>${latestIdxVal.toFixed(1)}</b>
-        </div>
         <table>
           <thead>
             <tr>
               <th>ArtistID</th>
-              <th class="right">Impact</th>
-              <th class="right">Abs</th>
+              <th class="right">Latest UMV (£)</th>
             </tr>
           </thead>
           <tbody>
       `;
-      for(const r of rows){
-        html += `
-          <tr>
-            <td>${r.artist}</td>
-            <td class="right">${r.impactSigned.toFixed(2)}</td>
-            <td class="right">${r.impactAbs.toFixed(2)}</td>
-          </tr>
-        `;
+
+      // Top 3 artists ranked by latest UMV (GBP), plotted as rebased index lines
+      for(const t of top){
+        const artistIdx = rebaseTo1000(t.obj.spine, t.obj.umv, 197601);
+
+        traces.push({
+          x: t.obj.spine.map(monthToDate),
+          y: artistIdx,
+          type:'scatter',
+          mode:'lines',
+          line:{width:2},
+          opacity:0.85,
+          name:`Artist ${t.artist}`
+        });
+
+        html += `<tr><td>${t.artist}</td><td class="right">${Math.round(t.latestUMV).toLocaleString()}</td></tr>`;
       }
+
       html += `</tbody></table>`;
-      contrib.innerHTML = html;
+      topTable.innerHTML = html;
+
+      plotTraces(traces);
 
     }catch(err){
-      contrib.innerHTML = `<div style="color:#b00020"><b>Error:</b> ${err.message}</div>`;
+      topTable.innerHTML = `<div style="color:#b00020"><b>Error:</b> ${err.message}</div>`;
     }finally{
-      btnContrib.disabled = false;
-      btnContrib.textContent = 'Show contributors (latest month)';
+      btnTop.disabled = false;
+      btnTop.textContent = 'Show top 3 by value (latest UMV)';
     }
   }, 50);
 });
@@ -494,15 +480,15 @@ btnReset.addEventListener('click', () => {
   RAW = null;
   GROUP = null;
   fileEl.value = '';
-  btnContrib.disabled = true;
+  btnTop.disabled = true;
   btnReset.disabled = true;
-  meta.innerHTML = `Upload a CSV exported from SQL with columns: <b>ArtistID</b>, <b>MonthYYYYMM</b>, <b>ValueGBP</b>.
-      This builds a pooled group index using: monthly average → LOCF → 12M rolling UMV → rebased to 1000 at 197601.`;
-  contrib.innerHTML = '';
+  meta.innerHTML =
+    `Upload a CSV exported from SQL with columns: <b>ArtistID</b>, <b>MonthYYYYMM</b>, <b>ValueGBP</b>.
+     The chart builds the pooled group index using: monthly average → LOCF → 12M rolling UMV → rebased to 1000 at 197601.`;
+  topTable.innerHTML = `<div class="muted">Upload data and click the button.</div>`;
   pillMonth.textContent = '—';
   Plotly.purge('chart');
 });
 </script>
 </body>
 </html>
-
