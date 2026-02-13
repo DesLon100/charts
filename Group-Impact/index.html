@@ -16,7 +16,7 @@ body{
 }
 
 .wrap{
-  max-width:645px;   /* Gutenberg narrow block safe */
+  max-width:645px;
   margin:0 auto;
 }
 
@@ -28,7 +28,7 @@ body{
   margin-bottom:10px;
 }
 
-input[type="file"], button{
+input[type="file"], button, select{
   height:40px;
   padding:0 12px;
   border:1px solid #ddd;
@@ -75,6 +75,13 @@ th,td{
   <input id="file" type="file" accept=".csv" />
   <button id="btnTop" disabled>Show top 3 by value</button>
   <button id="btnLog" disabled>Log scale: off</button>
+  <select id="smoothK" disabled>
+    <option value="1">Extra smoothing: off</option>
+    <option value="3" selected>Extra smoothing: 3</option>
+    <option value="4">Extra smoothing: 4</option>
+    <option value="5">Extra smoothing: 5</option>
+    <option value="6">Extra smoothing: 6</option>
+  </select>
   <button id="btnReset" disabled>Reset</button>
 </div>
 
@@ -83,7 +90,7 @@ th,td{
 <div class="panel">
   <div class="small">
     Ranking uses each artist’s latest 12-month UMV (monthly avg → LOCF → 12M).
-    Artist overlays are rebased to their first available month for clean comparison.
+    Extra smoothing applies a second rolling average of length k to both group and artist UMVs.
   </div>
   <div id="table"></div>
 </div>
@@ -92,14 +99,14 @@ th,td{
 
 <script>
 
-/* ----------------------- UTILITIES ----------------------- */
+/* ------------------ UTILITIES ------------------ */
 
 function parseCSV(text){
-  const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
-  const headers = lines[0].split(',').map(h=>h.trim());
-  const idxA = headers.findIndex(h=>/^artistid$/i.test(h));
-  const idxM = headers.findIndex(h=>/^monthyyyymm$/i.test(h)||/^month$/i.test(h));
-  const idxV = headers.findIndex(h=>/^valuegbp$/i.test(h)||/^data$/i.test(h));
+  const lines=text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+  const headers=lines[0].split(',').map(h=>h.trim());
+  const idxA=headers.findIndex(h=>/^artistid$/i.test(h));
+  const idxM=headers.findIndex(h=>/^monthyyyymm$/i.test(h)||/^month$/i.test(h));
+  const idxV=headers.findIndex(h=>/^valuegbp$/i.test(h)||/^data$/i.test(h));
 
   const rows=[];
   for(let i=1;i<lines.length;i++){
@@ -121,15 +128,13 @@ function nextMonth(m){
 }
 
 function buildSpine(min,max){
-  const s=[];
-  let c=min;
+  const s=[];let c=min;
   while(c<=max){s.push(c);c=nextMonth(c);}
   return s;
 }
 
 function locf(spine,map){
-  const out=[];
-  let last=null;
+  const out=[];let last=null;
   for(const m of spine){
     if(map.has(m)) last=map.get(m);
     out.push(last);
@@ -151,7 +156,7 @@ function rollingMean(arr,w){
 
 function rebaseFirst(arr){
   let base=null;
-  for(const v of arr){ if(Number.isFinite(v)){base=v;break;} }
+  for(const v of arr){if(Number.isFinite(v)){base=v;break;}}
   if(!base) return arr.map(()=>null);
   return arr.map(v=>Number.isFinite(v)?(v/base)*1000:null);
 }
@@ -167,7 +172,9 @@ function monthToDate(m){
   return new Date(Date.UTC(Math.floor(m/100),(m%100)-1,1));
 }
 
-/* ----------------------- CORE ----------------------- */
+/* ------------------ CORE ------------------ */
+
+let SMOOTH_K=3;
 
 function computeGroup(rows){
   const map=new Map();
@@ -180,12 +187,11 @@ function computeGroup(rows){
   const spine=buildSpine(months[0],months[months.length-1]);
 
   const avg=new Map();
-  for(const [m,o] of map.entries()){
-    avg.set(m,o.sum/o.count);
-  }
+  for(const [m,o] of map.entries()) avg.set(m,o.sum/o.count);
 
   const filled=locf(spine,avg);
-  const umv=rollingMean(filled,12);
+  let umv=rollingMean(filled,12);
+  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
   const idx=rebase1976(spine,umv);
 
   return{spine,idx};
@@ -201,10 +207,14 @@ function computeArtist(rows,id){
   }
   const months=[...map.keys()].sort((a,b)=>a-b);
   const spine=buildSpine(months[0],months[months.length-1]);
+
   const avg=new Map();
   for(const [m,o] of map.entries()) avg.set(m,o.sum/o.count);
+
   const filled=locf(spine,avg);
-  const umv=rollingMean(filled,12);
+  let umv=rollingMean(filled,12);
+  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
+
   return{spine,umv};
 }
 
@@ -220,13 +230,15 @@ function top3(rows){
   return list.slice(0,3);
 }
 
-/* ----------------------- PLOT ----------------------- */
+/* ------------------ PLOT ------------------ */
 
 let RAW=null;
 let GROUP=null;
 let IS_LOG=false;
+let CURRENT_TRACES=null;
 
 function plot(traces){
+  CURRENT_TRACES=traces;
   Plotly.react("chart",traces,{
     height:650,
     margin:{l:65,r:20,t:20,b:60},
@@ -239,12 +251,13 @@ function plot(traces){
   },{responsive:true,displayModeBar:false});
 }
 
-/* ----------------------- UI ----------------------- */
+/* ------------------ UI ------------------ */
 
 const fileEl=document.getElementById("file");
 const btnTop=document.getElementById("btnTop");
 const btnLog=document.getElementById("btnLog");
 const btnReset=document.getElementById("btnReset");
+const smoothSelect=document.getElementById("smoothK");
 const table=document.getElementById("table");
 
 fileEl.addEventListener("change",async e=>{
@@ -262,6 +275,7 @@ fileEl.addEventListener("change",async e=>{
   btnTop.disabled=false;
   btnLog.disabled=false;
   btnReset.disabled=false;
+  smoothSelect.disabled=false;
 });
 
 btnTop.addEventListener("click",()=>{
@@ -298,16 +312,32 @@ btnTop.addEventListener("click",()=>{
 btnLog.addEventListener("click",()=>{
   IS_LOG=!IS_LOG;
   btnLog.textContent=IS_LOG?"Log scale: on":"Log scale: off";
-  const gd=document.getElementById("chart");
-  if(gd.data) plot(gd.data);
+  if(CURRENT_TRACES) plot(CURRENT_TRACES);
+});
+
+smoothSelect.addEventListener("change",()=>{
+  SMOOTH_K=parseInt(smoothSelect.value,10);
+  if(RAW){
+    GROUP=computeGroup(RAW);
+    plot([{
+      x:GROUP.spine.map(monthToDate),
+      y:GROUP.idx,
+      type:"scatter",
+      mode:"lines",
+      line:{width:3},
+      name:"Group Index"
+    }]);
+  }
 });
 
 btnReset.addEventListener("click",()=>{
-  RAW=null;GROUP=null;IS_LOG=false;
+  RAW=null;GROUP=null;IS_LOG=false;SMOOTH_K=3;
   btnTop.disabled=true;
   btnLog.disabled=true;
   btnReset.disabled=true;
+  smoothSelect.disabled=true;
   btnLog.textContent="Log scale: off";
+  smoothSelect.value="3";
   Plotly.purge("chart");
   table.innerHTML="";
 });
