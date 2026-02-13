@@ -3,345 +3,422 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Group Index + Top 3 Artists</title>
+<title>Group Index + Top Artists</title>
 
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
 <style>
-body{
-  margin:0;
-  padding:14px;
-  font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
-  background:transparent;
-}
+  body{
+    margin:0;
+    padding:14px;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:transparent;
+    color:#111;
+  }
+  .wrap{ max-width:645px; margin:0 auto; }
 
-.wrap{
-  max-width:645px;
-  margin:0 auto;
-}
+  .controls{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    align-items:center;
+    margin-bottom:10px;
+  }
+  input[type="file"], button, select{
+    height:40px;
+    padding:0 12px;
+    border:1px solid #ddd;
+    border-radius:10px;
+    background:#fff;
+    cursor:pointer;
+  }
+  button:hover{border-color:#bbb;}
 
-.controls{
-  display:flex;
-  gap:8px;
-  flex-wrap:wrap;
-  align-items:center;
-  margin-bottom:10px;
-}
+  #chart{
+    border:1px solid #eee;
+    border-radius:14px;
+    background:#fff;
+    padding:6px;
+  }
 
-input[type="file"], button, select{
-  height:40px;
-  padding:0 12px;
-  border:1px solid #ddd;
-  border-radius:10px;
-  background:#fff;
-  cursor:pointer;
-}
+  .panel{
+    margin-top:12px;
+    border:1px solid #eee;
+    border-radius:14px;
+    padding:12px;
+    background:#fff;
+  }
+  .small{font-size:12px;color:#555;line-height:1.35;margin:0 0 10px;}
 
-button:hover{border-color:#bbb;}
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th,td{ padding:8px 6px; border-bottom:1px solid #f0f0f0; }
+  th{ font-size:12px; color:#666; font-weight:600; text-align:left; }
+  .right{text-align:right;}
 
-#chart{
-  border:1px solid #eee;
-  border-radius:14px;
-  background:#fff;
-  padding:6px;
-}
-
-.panel{
-  margin-top:12px;
-  border:1px solid #eee;
-  border-radius:14px;
-  padding:12px;
-  background:#fff;
-}
-
-table{
-  width:100%;
-  border-collapse:collapse;
-  font-size:13px;
-}
-th,td{
-  padding:8px 6px;
-  border-bottom:1px solid #f0f0f0;
-}
-.right{text-align:right;}
-.small{font-size:12px;color:#555;}
+  .toggle{
+    height:30px;
+    padding:0 10px;
+    border-radius:999px;
+    border:1px solid #ddd;
+    background:#fff;
+    font-size:12px;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .toggle.on{
+    border-color:#bbb;
+    font-weight:600;
+  }
+  .muted{ color:#777; }
 </style>
 </head>
 
 <body>
 <div class="wrap">
 
-<div class="controls">
-  <input id="file" type="file" accept=".csv" />
-  <button id="btnTop" disabled>Show top 3 by value</button>
-  <button id="btnLog" disabled>Log scale: off</button>
-  <select id="smoothK" disabled>
-    <option value="1">Extra smoothing: off</option>
-    <option value="3" selected>Extra smoothing: 3</option>
-    <option value="4">Extra smoothing: 4</option>
-    <option value="5">Extra smoothing: 5</option>
-    <option value="6">Extra smoothing: 6</option>
-  </select>
-  <button id="btnReset" disabled>Reset</button>
-</div>
+  <div class="controls">
+    <input id="file" type="file" accept=".csv" />
+    <button id="btnLog" disabled>Log scale: off</button>
 
-<div id="chart"></div>
+    <select id="smoothK" disabled>
+      <option value="1">Extra smoothing: off</option>
+      <option value="3" selected>Extra smoothing: 3</option>
+      <option value="4">Extra smoothing: 4</option>
+      <option value="5">Extra smoothing: 5</option>
+      <option value="6">Extra smoothing: 6</option>
+    </select>
 
-<div class="panel">
-  <div class="small">
-    Ranking uses each artist’s latest 12-month UMV (monthly avg → LOCF → 12M).
-    Extra smoothing applies a second rolling average of length k to both group and artist UMVs.
+    <button id="btnReset" disabled>Reset</button>
   </div>
-  <div id="table"></div>
-</div>
+
+  <div id="chart"></div>
+
+  <div class="panel">
+    <p class="small">
+      Table ranks the <b>top 5 artists</b> by their <b>latest 12-month UMV (£)</b> (monthly avg → LOCF → 12M),
+      with an optional second smoothing pass (k) applied to both group and artists.
+      Use the toggles to add/remove lines so the chart stays readable.
+    </p>
+    <div id="table"><div class="muted">Upload a CSV to begin.</div></div>
+  </div>
 
 </div>
 
 <script>
-
-/* ------------------ UTILITIES ------------------ */
-
+/* ------------------ parsing ------------------ */
 function parseCSV(text){
-  const lines=text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
-  const headers=lines[0].split(',').map(h=>h.trim());
-  const idxA=headers.findIndex(h=>/^artistid$/i.test(h));
-  const idxM=headers.findIndex(h=>/^monthyyyymm$/i.test(h)||/^month$/i.test(h));
-  const idxV=headers.findIndex(h=>/^valuegbp$/i.test(h)||/^data$/i.test(h));
+  const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+  const headers = lines[0].split(',').map(h=>h.trim());
+
+  const idxA = headers.findIndex(h=>/^artistid$/i.test(h));
+  const idxN1 = headers.findIndex(h=>/^name$/i.test(h));
+  const idxN2 = headers.findIndex(h=>/^name2$/i.test(h));
+  const idxM = headers.findIndex(h=>/^monthyyyymm$/i.test(h) || /^month$/i.test(h));
+  const idxV = headers.findIndex(h=>/^valuegbp$/i.test(h) || /^data$/i.test(h));
 
   const rows=[];
+  const names=new Map();
+
   for(let i=1;i<lines.length;i++){
     const p=lines[i].split(',');
+
     const artist=parseInt(p[idxA],10);
     const month=parseInt(p[idxM],10);
     const value=parseFloat(p[idxV]);
-    if(Number.isFinite(artist)&&Number.isFinite(month)&&Number.isFinite(value)){
-      rows.push({artist,month,value});
+
+    if(!Number.isFinite(artist)||!Number.isFinite(month)||!Number.isFinite(value)) continue;
+
+    const first = idxN1!==-1 ? (p[idxN1]||'').trim() : '';
+    const second = idxN2!==-1 ? (p[idxN2]||'').trim() : '';
+
+    const fullName = (first + ' ' + second).trim();
+
+    if(fullName && !names.has(artist)){
+      names.set(artist, fullName);
     }
+
+    rows.push({artist,month,value});
   }
-  return rows;
+
+  return {rows,names};
 }
 
+/* ------------------ month helpers ------------------ */
 function nextMonth(m){
-  const y=Math.floor(m/100);
-  const mm=m%100;
-  return mm===12?(y+1)*100+1:y*100+mm+1;
+  const y=Math.floor(m/100), mm=m%100;
+  return mm===12 ? (y+1)*100+1 : y*100+(mm+1);
 }
-
 function buildSpine(min,max){
-  const s=[];let c=min;
-  while(c<=max){s.push(c);c=nextMonth(c);}
+  const s=[]; let c=min;
+  while(c<=max){ s.push(c); c=nextMonth(c); }
   return s;
 }
+function monthToDate(m){
+  return new Date(Date.UTC(Math.floor(m/100),(m%100)-1,1));
+}
 
-function locf(spine,map){
-  const out=[];let last=null;
+/* ------------------ maths ------------------ */
+function locf(spine, map){
+  const out=[]; let last=null;
   for(const m of spine){
-    if(map.has(m)) last=map.get(m);
+    if(map.has(m)) last = map.get(m);
     out.push(last);
   }
   return out;
 }
-
 function rollingMean(arr,w){
   const out=[];
   for(let i=0;i<arr.length;i++){
     let sum=0,count=0;
     for(let j=Math.max(0,i-w+1);j<=i;j++){
-      if(Number.isFinite(arr[j])){sum+=arr[j];count++;}
+      if(Number.isFinite(arr[j])){ sum+=arr[j]; count++; }
     }
-    out.push(count?sum/count:null);
+    out.push(count ? sum/count : null);
   }
   return out;
 }
-
+function rebase1976(spine, arr){
+  const idx = spine.indexOf(197601);
+  if(idx === -1) return arr.map(()=>null);
+  const base = arr[idx];
+  if(!Number.isFinite(base) || base===0) return arr.map(()=>null);
+  return arr.map(v => Number.isFinite(v) ? (v/base)*1000 : null);
+}
 function rebaseFirst(arr){
   let base=null;
-  for(const v of arr){if(Number.isFinite(v)){base=v;break;}}
-  if(!base) return arr.map(()=>null);
-  return arr.map(v=>Number.isFinite(v)?(v/base)*1000:null);
+  for(const v of arr){ if(Number.isFinite(v)){ base=v; break; } }
+  if(!Number.isFinite(base) || base===0) return arr.map(()=>null);
+  return arr.map(v => Number.isFinite(v) ? (v/base)*1000 : null);
 }
 
-function rebase1976(spine,arr){
-  const idx=spine.indexOf(197601);
-  if(idx===-1||!arr[idx]) return arr.map(()=>null);
-  const base=arr[idx];
-  return arr.map(v=>Number.isFinite(v)?(v/base)*1000:null);
-}
-
-function monthToDate(m){
-  return new Date(Date.UTC(Math.floor(m/100),(m%100)-1,1));
-}
-
-/* ------------------ CORE ------------------ */
-
-let SMOOTH_K=3;
+/* ------------------ core computation ------------------ */
+let SMOOTH_K = 3;
 
 function computeGroup(rows){
-  const map=new Map();
+  const sc = new Map(); // month -> {sum,count}
   for(const r of rows){
-    if(!map.has(r.month)) map.set(r.month,{sum:0,count:0});
-    const o=map.get(r.month);
-    o.sum+=r.value;o.count++;
+    let o = sc.get(r.month);
+    if(!o){ o={sum:0,count:0}; sc.set(r.month,o); }
+    o.sum += r.value; o.count += 1;
   }
-  const months=[...map.keys()].sort((a,b)=>a-b);
-  const spine=buildSpine(months[0],months[months.length-1]);
+  const months=[...sc.keys()].sort((a,b)=>a-b);
+  const spine = buildSpine(months[0], months[months.length-1]);
 
-  const avg=new Map();
-  for(const [m,o] of map.entries()) avg.set(m,o.sum/o.count);
+  const avg = new Map();
+  for(const [m,o] of sc.entries()) avg.set(m, o.sum/o.count);
 
-  const filled=locf(spine,avg);
-  let umv=rollingMean(filled,12);
-  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
-  const idx=rebase1976(spine,umv);
+  const filled = locf(spine, avg);
+  let umv = rollingMean(filled, 12);
+  if(SMOOTH_K>1) umv = rollingMean(umv, SMOOTH_K);
 
-  return{spine,idx};
+  const idx = rebase1976(spine, umv);
+  return {spine, idx};
 }
 
-function computeArtist(rows,id){
-  const r=rows.filter(x=>x.artist===id);
-  const map=new Map();
-  for(const x of r){
-    if(!map.has(x.month)) map.set(x.month,{sum:0,count:0});
-    const o=map.get(x.month);
-    o.sum+=x.value;o.count++;
+function computeArtistUMV(rows, artistID){
+  const sc = new Map(); // month -> {sum,count}
+  for(const r of rows){
+    if(r.artist !== artistID) continue;
+    let o = sc.get(r.month);
+    if(!o){ o={sum:0,count:0}; sc.set(r.month,o); }
+    o.sum += r.value; o.count += 1;
   }
-  const months=[...map.keys()].sort((a,b)=>a-b);
-  const spine=buildSpine(months[0],months[months.length-1]);
+  const months=[...sc.keys()].sort((a,b)=>a-b);
+  if(months.length === 0) return null;
 
-  const avg=new Map();
-  for(const [m,o] of map.entries()) avg.set(m,o.sum/o.count);
+  const spine = buildSpine(months[0], months[months.length-1]);
+  const avg = new Map();
+  for(const [m,o] of sc.entries()) avg.set(m, o.sum/o.count);
 
-  const filled=locf(spine,avg);
-  let umv=rollingMean(filled,12);
-  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
+  const filled = locf(spine, avg);
+  let umv = rollingMean(filled, 12);
+  if(SMOOTH_K>1) umv = rollingMean(umv, SMOOTH_K);
 
-  return{spine,umv};
+  return {spine, umv};
 }
 
-function top3(rows){
-  const ids=[...new Set(rows.map(r=>r.artist))];
-  const list=[];
+function topNByLatestUMV(rows, names, n=5){
+  const ids = [...new Set(rows.map(r=>r.artist))];
+  const ranked = [];
+
   for(const id of ids){
-    const obj=computeArtist(rows,id);
-    const latest=obj.umv[obj.umv.length-1];
-    if(Number.isFinite(latest)) list.push({id,latest,obj});
+    const obj = computeArtistUMV(rows, id);
+    if(!obj) continue;
+    const latest = obj.umv[obj.umv.length-1];
+    if(!Number.isFinite(latest)) continue;
+    ranked.push({
+      id,
+      name: names.get(id) || `Artist ${id}`,
+      latest,
+      obj
+    });
   }
-  list.sort((a,b)=>b.latest-a.latest);
-  return list.slice(0,3);
+
+  ranked.sort((a,b)=>b.latest-a.latest);
+  return ranked.slice(0,n);
 }
 
-/* ------------------ PLOT ------------------ */
-
-let RAW=null;
-let GROUP=null;
+/* ------------------ plotting ------------------ */
 let IS_LOG=false;
-let CURRENT_TRACES=null;
+let RAW=null;
+let NAMES=new Map();
+let GROUP=null;
+let TOP=null;
+let VISIBLE=new Set(); // selected artist IDs to show
+let CURRENT_MODE='group'; // group or overlay
+
+function buildTraces(){
+  const traces = [];
+
+  // group line always present
+  traces.push({
+    x: GROUP.spine.map(monthToDate),
+    y: GROUP.idx,
+    type:'scatter',
+    mode:'lines',
+    line:{width:3},
+    name:'Group Index'
+  });
+
+  // add selected artist lines (rebased to first available month)
+  for(const row of TOP){
+    if(!VISIBLE.has(row.id)) continue;
+    const rebased = rebaseFirst(row.obj.umv);
+
+    traces.push({
+      x: row.obj.spine.map(monthToDate),
+      y: rebased,
+      type:'scatter',
+      mode:'lines',
+      line:{width:2},
+      opacity:0.85,
+      name: row.name
+    });
+  }
+  return traces;
+}
 
 function plot(traces){
-  CURRENT_TRACES=traces;
-  Plotly.react("chart",traces,{
-    height:650,
+  Plotly.react('chart', traces, {
+    height: 430,                 // ~3:2 in a 645px wrapper
     margin:{l:65,r:20,t:20,b:60},
-    yaxis:{
-      title:"Index",
-      type:IS_LOG?"log":"linear"
-    },
+    paper_bgcolor:'rgba(0,0,0,0)',
+    plot_bgcolor:'#fff',
+    xaxis:{ tickformat:'%Y', showgrid:true, zeroline:false },
+    yaxis:{ title:'Index', type: IS_LOG ? 'log' : 'linear', showgrid:true, zeroline:false },
     showlegend:true,
-    legend:{orientation:"h",y:-0.25}
-  },{responsive:true,displayModeBar:false});
+    legend:{ orientation:'h', y:-0.25 }
+  }, {responsive:true, displayModeBar:false});
 }
 
-/* ------------------ UI ------------------ */
+/* ------------------ table + toggles ------------------ */
+function renderTable(){
+  if(!TOP) return;
 
-const fileEl=document.getElementById("file");
-const btnTop=document.getElementById("btnTop");
-const btnLog=document.getElementById("btnLog");
-const btnReset=document.getElementById("btnReset");
-const smoothSelect=document.getElementById("smoothK");
-const table=document.getElementById("table");
+  let html = `<table>
+    <thead>
+      <tr>
+        <th>Toggle</th>
+        <th>Artist</th>
+        <th class="right">Latest UMV (£)</th>
+      </tr>
+    </thead>
+    <tbody>`;
 
-fileEl.addEventListener("change",async e=>{
-  const text=await e.target.files[0].text();
-  RAW=parseCSV(text);
-  GROUP=computeGroup(RAW);
-  plot([{
-    x:GROUP.spine.map(monthToDate),
-    y:GROUP.idx,
-    type:"scatter",
-    mode:"lines",
-    line:{width:3},
-    name:"Group Index"
-  }]);
-  btnTop.disabled=false;
-  btnLog.disabled=false;
-  btnReset.disabled=false;
-  smoothSelect.disabled=false;
-});
+  for(const r of TOP){
+    const on = VISIBLE.has(r.id);
+    html += `<tr>
+      <td>
+        <button class="toggle ${on ? 'on':''}" data-artist="${r.id}">
+          ${on ? 'On' : 'Off'}
+        </button>
+      </td>
+      <td>${r.name}</td>
+      <td class="right">${Math.round(r.latest).toLocaleString()}</td>
+    </tr>`;
+  }
 
-btnTop.addEventListener("click",()=>{
-  const top=top3(RAW);
-  const traces=[{
-    x:GROUP.spine.map(monthToDate),
-    y:GROUP.idx,
-    type:"scatter",
-    mode:"lines",
-    line:{width:3},
-    name:"Group Index"
-  }];
+  html += `</tbody></table>`;
+  document.getElementById('table').innerHTML = html;
 
-  let html="<table><thead><tr><th>ArtistID</th><th class='right'>Latest UMV (£)</th></tr></thead><tbody>";
+  // wire buttons
+  document.querySelectorAll('button.toggle').forEach(btn=>{
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.getAttribute('data-artist'), 10);
+      if(VISIBLE.has(id)) VISIBLE.delete(id); else VISIBLE.add(id);
 
-  for(const t of top){
-    const rebased=rebaseFirst(t.obj.umv);
-    traces.push({
-      x:t.obj.spine.map(monthToDate),
-      y:rebased,
-      type:"scatter",
-      mode:"lines",
-      line:{width:2},
-      name:"Artist "+t.id
+      renderTable();
+      plot(buildTraces());
     });
-    html+=`<tr><td>${t.id}</td><td class='right'>${Math.round(t.latest).toLocaleString()}</td></tr>`;
+  });
+}
+
+/* ------------------ UI wiring ------------------ */
+const fileEl = document.getElementById('file');
+const btnLog = document.getElementById('btnLog');
+const smoothSelect = document.getElementById('smoothK');
+const btnReset = document.getElementById('btnReset');
+
+fileEl.addEventListener('change', async (e) => {
+  const f = e.target.files?.[0];
+  if(!f) return;
+
+  const text = await f.text();
+  const parsed = parseCSV(text);
+
+  RAW = parsed.rows;
+  NAMES = parsed.names;
+
+  SMOOTH_K = parseInt(smoothSelect.value, 10) || 3;
+  GROUP = computeGroup(RAW);
+
+  TOP = topNByLatestUMV(RAW, NAMES, 5);
+  VISIBLE = new Set(); // default: none selected
+
+  plot(buildTraces());
+  renderTable();
+
+  btnLog.disabled = false;
+  smoothSelect.disabled = false;
+  btnReset.disabled = false;
+});
+
+btnLog.addEventListener('click', () => {
+  IS_LOG = !IS_LOG;
+  btnLog.textContent = IS_LOG ? 'Log scale: on' : 'Log scale: off';
+  if(GROUP) plot(buildTraces());
+});
+
+smoothSelect.addEventListener('change', () => {
+  SMOOTH_K = parseInt(smoothSelect.value, 10);
+  if(!RAW) return;
+
+  // recompute (group + top table objects depend on smoothing)
+  GROUP = computeGroup(RAW);
+  TOP = topNByLatestUMV(RAW, NAMES, 5);
+
+  // keep toggles if possible
+  const stillVisible = new Set();
+  for(const r of TOP){
+    if(VISIBLE.has(r.id)) stillVisible.add(r.id);
   }
-  html+="</tbody></table>";
-  table.innerHTML=html;
+  VISIBLE = stillVisible;
 
-  plot(traces);
+  plot(buildTraces());
+  renderTable();
 });
 
-btnLog.addEventListener("click",()=>{
-  IS_LOG=!IS_LOG;
-  btnLog.textContent=IS_LOG?"Log scale: on":"Log scale: off";
-  if(CURRENT_TRACES) plot(CURRENT_TRACES);
+btnReset.addEventListener('click', () => {
+  RAW=null; NAMES=new Map(); GROUP=null; TOP=null; VISIBLE=new Set();
+  IS_LOG=false; btnLog.textContent='Log scale: off';
+  smoothSelect.value='3';
+  Plotly.purge('chart');
+  document.getElementById('table').innerHTML = `<div class="muted">Upload a CSV to begin.</div>`;
+  btnLog.disabled = true;
+  smoothSelect.disabled = true;
+  btnReset.disabled = true;
+  fileEl.value = '';
 });
-
-smoothSelect.addEventListener("change",()=>{
-  SMOOTH_K=parseInt(smoothSelect.value,10);
-  if(RAW){
-    GROUP=computeGroup(RAW);
-    plot([{
-      x:GROUP.spine.map(monthToDate),
-      y:GROUP.idx,
-      type:"scatter",
-      mode:"lines",
-      line:{width:3},
-      name:"Group Index"
-    }]);
-  }
-});
-
-btnReset.addEventListener("click",()=>{
-  RAW=null;GROUP=null;IS_LOG=false;SMOOTH_K=3;
-  btnTop.disabled=true;
-  btnLog.disabled=true;
-  btnReset.disabled=true;
-  smoothSelect.disabled=true;
-  btnLog.textContent="Log scale: off";
-  smoothSelect.value="3";
-  Plotly.purge("chart");
-  table.innerHTML="";
-});
-
 </script>
 </body>
 </html>
