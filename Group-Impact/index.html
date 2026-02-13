@@ -111,8 +111,7 @@ function parseCSV(text){
   const headers = lines[0].split(',').map(h=>h.trim());
 
   const idxA = headers.findIndex(h=>/^artistid$/i.test(h));
-  const idxN1 = headers.findIndex(h=>/^name$/i.test(h));
-  const idxN2 = headers.findIndex(h=>/^name2$/i.test(h));
+  const idxName = headers.findIndex(h=>/^artistname$/i.test(h));  // <-- NEW
   const idxM = headers.findIndex(h=>/^monthyyyymm$/i.test(h) || /^month$/i.test(h));
   const idxV = headers.findIndex(h=>/^valuegbp$/i.test(h) || /^data$/i.test(h));
 
@@ -128,11 +127,7 @@ function parseCSV(text){
 
     if(!Number.isFinite(artist)||!Number.isFinite(month)||!Number.isFinite(value)) continue;
 
-    const first = idxN1!==-1 ? (p[idxN1]||'').trim() : '';
-    const second = idxN2!==-1 ? (p[idxN2]||'').trim() : '';
-
-    const fullName = (first + ' ' + second).trim();
-
+    const fullName = (idxName !== -1 ? (p[idxName] || '').trim() : '');
     if(fullName && !names.has(artist)){
       names.set(artist, fullName);
     }
