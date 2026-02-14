@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Group/Share — Concentration of Uplift</title>
+
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+<style>
+body{
+  margin:0;
+  padding:14px;
+  font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  background:transparent;
+  color:#111;
+}
+.wrap{ max-width:645px; margin:0 auto; }
+
+.controls{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+  margin-bottom:10px;
+}
+
+input[type="file"], button, select{
+  height:40px;
+  padding:0 12px;
+  border:1px solid #ddd;
+  border-radius:10px;
+  background:#fff;
+  cursor:pointer;
+}
+button:hover{border-color:#bbb;}
+select:disabled, button:disabled{opacity:.55; cursor:not-allowed;}
+
+.card{
+  border:1px solid #eee;
+  border-radius:14px;
+  background:#fff;
+  padding:10px;
+  margin-bottom:12px;
+}
+
+#chartIndex, #chartShare{
+  border:1px solid #eee;
+  border-radius:14px;
+  background:#fff;
+  padding:6px;
+}
+
+.panel{
+  margin-top:12px;
+  border:1px solid #eee;
+  border-radius:14px;
+  padding:12px;
+  background:#fff;
+}
+
+.small{font-size:12px;color:#555;line-height:1.35;margin:0 0 10px;}
+
+.badges{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:8px;
+}
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border:1px solid #eee;
+  border-radius:999px;
+  font-size:12px;
+  color:#333;
+  background:#fafafa;
+}
+.badge strong{font-weight:700;}
+.badge.good{border-color:#e6e6e6;background:#f7f7f7;}
+.badge.warn{border-color:#e6e6e6;background:#f7f7f7;}
+
+table{ width:100%; border-collapse:collapse; font-size:13px; }
+th,td{ padding:8px 6px; border-bottom:1px solid #f0f0f0; }
+th{ font-size:12px; color:#666; font-weight:600; text-align:left; }
+.right{text-align:right;}
+
+.muted{ color:#777; }
+hr{border:none;border-top:1px solid #eee;margin:12px 0;}
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <div class="controls">
+    <input id="file" type="file" accept=".csv" />
+
+    <button id="btnLog" disabled>Log scale: off</button>
+
+    <select id="smoothK" disabled>
+      <option value="1">Extra smoothing: off</option>
+      <option value="3" selected>Extra smoothing: 3</option>
+      <option value="4">Extra smoothing: 4</option>
+      <option value="5">Extra smoothing: 5</option>
+      <option value="6">Extra smoothing: 6</option>
+    </select>
+
+    <select id="mode" disabled title="How to treat negative moves">
+      <option value="positive" selected>Uplift: winners only</option>
+      <option value="net">Uplift: net (includes losers)</option>
+    </select>
+
+    <select id="threshold" disabled title="Concentration threshold">
+      <option value="0.5">Concentration threshold: 50%</option>
+      <option value="0.6" selected>Concentration threshold: 60%</option>
+    </select>
+
+    <button id="btnReset" disabled>Reset</button>
+  </div>
+
+  <div class="card">
+    <div class="controls" style="margin:0;">
+      <select id="winStart" disabled></select>
+      <select id="winEnd" disabled></select>
+      <button id="btnLast36" disabled>Last 3y</button>
+      <button id="btnLast60" disabled>Last 5y</button>
+      <button id="btnAll" disabled>All</button>
+    </div>
+
+    <div class="badges" id="summaryBadges"></div>
+  </div>
+
+  <div id="chartIndex"></div>
+  <div id="chartShare" style="margin-top:12px;"></div>
+
+  <div class="panel">
+    <p class="small">
+      This view asks whether the group’s move is being lifted by a few “brand” artists or a broad selection of artists.
+      We compute each artist’s <b>UMV change</b> over the selected window, convert that to a <b>share of total uplift</b>,
+      and report how much of the uplift is explained by the <b>Top 5</b>.
+      <span class="muted">(UMV here is the 12-month rolling average of ValueGBP with optional extra smoothing.)</span>
+    </p>
+
+    <div id="table"><div class="muted">Upload a CSV to begin.</div></div>
+  </div>
+
+</div>
+
+<script>
+/* ================== parsing ================== */
+function parseCSV(text){
+  const lines = text.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+  const headers = lines[0].split(',').map(h=>h.trim());
+
+  const idxA = headers.findIndex(h=>/^artistid$/i.test(h));
+  const idxName = headers.findIndex(h=>/^artistname$/i.test(h));
+  const idxM = headers.findIndex(h=>/^monthyyyymm$/i.test(h));
+  const idxV = headers.findIndex(h=>/^valuegbp$/i.test(h));
+
+  if(idxA===-1 || idxM===-1 || idxV===-1){
+    throw new Error("CSV must include columns: ArtistID, MonthYYYYMM, ValueGBP (ArtistName optional).");
+  }
+
+  const rows=[];
+  const names=new Map();
+
+  for(let i=1;i<lines.length;i++){
+    const p=lines[i].split(',');
+
+    const artist=parseInt(p[idxA],10);
+    const month=parseInt(p[idxM],10);
+    const value=parseFloat(p[idxV]);
+
+    if(!Number.isFinite(artist)||!Number.isFinite(month)||!Number.isFinite(value)) continue;
+
+    const nm = idxName!==-1 ? (p[idxName]||'').trim() : '';
+    if(nm && !names.has(artist)) names.set(artist,nm);
+
+    rows.push({artist,month,value});
+  }
+  return {rows,names};
+}
+
+/* ================== helpers ================== */
+function nextMonth(m){ const y=Math.floor(m/100),mm=m%100; return mm===12?(y+1)*100+1:y*100+(mm+1); }
+function buildSpine(min,max){ const s=[]; let c=min; while(c<=max){ s.push(c); c=nextMonth(c);} return s; }
+function monthToDate(m){ return new Date(Date.UTC(Math.floor(m/100),(m%100)-1,1)); }
+function locf(spine,map){ let last=null; return spine.map(m=>{ if(map.has(m)) last=map.get(m); return last; }); }
+function rollingMean(arr,w){
+  return arr.map((_,i)=>{
+    let sum=0,count=0;
+    for(let j=Math.max(0,i-w+1); j<=i; j++){
+      const v=arr[j];
+      if(Number.isFinite(v)){ sum+=v; count++; }
+    }
+    return count? sum/count : null;
+  });
+}
+function rebase1976(spine,arr){
+  const idx=spine.indexOf(197601);
+  if(idx===-1) return arr.map(()=>null);
+  const base=arr[idx];
+  if(!Number.isFinite(base) || base===0) return arr.map(()=>null);
+  return arr.map(v=>Number.isFinite(v)? (v/base)*1000 : null);
+}
+
+/* ================== state ================== */
+let RAW=null, NAMES=new Map();
+let IS_LOG=false;
+let SMOOTH_K=3;
+let MODE='positive';      // 'positive' or 'net'
+let THRESH=0.60;
+
+let GROUP=null;           // {spine, idx}
+let SPINE=null;           // spine months for whole dataset
+let ART_CACHE=new Map();  // artistId -> {spine, umv, startMonth, endMonth}
+let IDS=[];
+
+/* ================== core computations ================== */
+function computeGroup(rows){
+  const sc=new Map();
+  rows.forEach(r=>{
+    let o=sc.get(r.month)||{sum:0,count:0};
+    o.sum+=r.value; o.count++;
+    sc.set(r.month,o);
+  });
+  const months=[...sc.keys()].sort((a,b)=>a-b);
+  const spine=buildSpine(months[0],months[months.length-1]);
+  const avg=new Map([...sc.entries()].map(([m,o])=>[m,o.sum/o.count]));
+  let umv=rollingMean(locf(spine,avg),12);
+  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
+  return { spine, idx: rebase1976(spine, umv), umv };
+}
+
+function computeArtistUMV(rows,id){
+  const sc=new Map();
+  rows.forEach(r=>{
+    if(r.artist!==id) return;
+    let o=sc.get(r.month)||{sum:0,count:0};
+    o.sum+=r.value; o.count++;
+    sc.set(r.month,o);
+  });
+  const months=[...sc.keys()].sort((a,b)=>a-b);
+  if(!months.length) return null;
+
+  const spine=buildSpine(months[0],months[months.length-1]);
+  const avg=new Map([...sc.entries()].map(([m,o])=>[m,o.sum/o.count]));
+  let umv=rollingMean(locf(spine,avg),12);
+  if(SMOOTH_K>1) umv=rollingMean(umv,SMOOTH_K);
+
+  return { spine, umv, startMonth: months[0], endMonth: months[months.length-1] };
+}
+
+function valueAtMonth(spine, series, month){
+  const idx = spine.indexOf(month);
+  if(idx===-1) return null;
+  const v = series[idx];
+  return Number.isFinite(v) ? v : null;
+}
+
+function computeContributions(startM, endM){
+  // per artist delta over window (on UMV), then shares
+  const items=[];
+  let total = 0;
+
+  for(const id of IDS){
+    const obj = ART_CACHE.get(id);
+    if(!obj) continue;
+
+    // require we have values at both endpoints
+    const v0 = valueAtMonth(obj.spine, obj.umv, startM);
+    const v1 = valueAtMonth(obj.spine, obj.umv, endM);
+    if(!Number.isFinite(v0) || !Number.isFinite(v1)) continue;
+
+    const delta = v1 - v0;
+
+    if(MODE==='positive'){
+      if(delta <= 0) continue;
+      total += delta;
+    }else{
+      total += delta; // net
+    }
+
+    items.push({
+      id,
+      name: NAMES.get(id) || `Artist ${id}`,
+      start: v0,
+      end: v1,
+      delta
+    });
+  }
+
+  if(!Number.isFinite(total) || total===0){
+    return { total: 0, items: [], top5Share: 0, classification: "No net uplift" };
+  }
+
+  // compute shares (for net mode, allow negative shares)
+  items.forEach(d => d.share = d.delta / total);
+
+  // sort by share descending (net mode: biggest positive contributors first)
+  items.sort((a,b)=> (b.share - a.share));
+
+  const top5 = items.slice(0,5);
+  const top5Share = top5.reduce((s,d)=> s + d.share, 0);
+
+  let classification = "Broad-based";
+  if(top5Share >= THRESH){
+    classification = (THRESH>=0.60) ? "Highly concentrated" : "Concentrated";
+  }else{
+    classification = "Broad-based";
+  }
+
+  return { total, items, top5, top5Share, classification };
+}
+
+/* ================== UI helpers ================== */
+function monthLabel(m){
+  const y=Math.floor(m/100), mm=m%100;
+  const monthNames=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return `${monthNames[mm-1]} ${y}`;
+}
+function fillWindowSelectors(spine){
+  const startSel=document.getElementById('winStart');
+  const endSel=document.getElementById('winEnd');
+  startSel.innerHTML='';
+  endSel.innerHTML='';
+
+  spine.forEach(m=>{
+    const opt1=document.createElement('option');
+    opt1.value=String(m);
+    opt1.textContent=monthLabel(m);
+    startSel.appendChild(opt1);
+
+    const opt2=document.createElement('option');
+    opt2.value=String(m);
+    opt2.textContent=monthLabel(m);
+    endSel.appendChild(opt2);
+  });
+}
+
+function setWindowLastNMonths(n){
+  const startSel=document.getElementById('winStart');
+  const endSel=document.getElementById('winEnd');
+  const len=SPINE.length;
+  const endIdx=len-1;
+  const startIdx=Math.max(0, len-n);
+  startSel.value=String(SPINE[startIdx]);
+  endSel.value=String(SPINE[endIdx]);
+}
+
+function clampWindow(){
+  const startSel=document.getElementById('winStart');
+  const endSel=document.getElementById('winEnd');
+  let s=parseInt(startSel.value,10);
+  let e=parseInt(endSel.value,10);
+  if(s>e){
+    // swap to keep sane
+    const tmp=s; s=e; e=tmp;
+    startSel.value=String(s);
+    endSel.value=String(e);
+  }
+  return {s,e};
+}
+
+/* ================== plotting ================== */
+function plotIndex(){
+  const startSel=document.getElementById('winStart');
+  const endSel=document.getElementById('winEnd');
+  const {s,e}=clampWindow();
+
+  const x=GROUP.spine.map(monthToDate);
+  const y=GROUP.idx;
+
+  // highlight window as a translucent rectangle (simple: shapes)
+  const sDate=monthToDate(s);
+  const eDate=monthToDate(e);
+
+  const traces=[{
+    x, y,
+    type:'scatter', mode:'lines',
+    line:{width:3},
+    name:'Group Index'
+  }];
+
+  Plotly.react('chartIndex', traces, {
+    height:380,
+    margin:{l:65,r:20,t:20,b:60},
+    xaxis:{tickformat:'%Y'},
+    yaxis:{title:'Index', type: IS_LOG ? 'log' : 'linear'},
+    legend:{orientation:'h', y:-0.25},
+    shapes:[{
+      type:'rect',
+      xref:'x', yref:'paper',
+      x0:sDate, x1:eDate,
+      y0:0, y1:1,
+      fillcolor:'rgba(0,0,0,0.06)',
+      line:{width:0}
+    }]
+  }, {responsive:true, displayModeBar:false});
+}
+
+function plotShare(contrib){
+  // Bar chart of top 10 contributor shares + cumulative line (Pareto)
+  const topN = 10;
+  const top = contrib.items.slice(0, topN);
+  const labels = top.map(d=>d.name);
+  const shares = top.map(d=>d.share * 100);
+
+  // cumulative
+  let cum=0;
+  const cumArr = shares.map(v => (cum += v));
+
+  const bar = {
+    x: labels,
+    y: shares,
+    type:'bar',
+    name:'Share of uplift (%)'
+  };
+  const line = {
+    x: labels,
+    y: cumArr,
+    type:'scatter',
+    mode:'lines+markers',
+    name:'Cumulative (%)',
+    yaxis:'y2'
+  };
+
+  Plotly.react('chartShare', [bar, line], {
+    height:340,
+    margin:{l:65,r:55,t:20,b:120},
+    xaxis:{tickangle:-45},
+    yaxis:{title:'Share of uplift (%)'},
+    yaxis2:{
+      title:'Cumulative (%)',
+      overlaying:'y',
+      side:'right',
+      rangemode:'tozero'
+    },
+    legend:{orientation:'h', y:-0.28}
+  }, {responsive:true, displayModeBar:false});
+}
+
+/* ================== summary + table ================== */
+function renderBadges(contrib, startM, endM){
+  const el=document.getElementById('summaryBadges');
+  const pct = (contrib.top5Share*100);
+  const cls = contrib.classification;
+
+  const totalTxt = MODE==='positive'
+    ? `Total uplift (winners): £${Math.round(contrib.total).toLocaleString()}`
+    : `Total net change: £${Math.round(contrib.total).toLocaleString()}`;
+
+  const badgeClass = (contrib.top5Share >= THRESH) ? 'warn' : 'good';
+
+  el.innerHTML = `
+    <div class="badge"><strong>Window</strong> ${monthLabel(startM)} → ${monthLabel(endM)}</div>
+    <div class="badge ${badgeClass}">
+      <strong>Top 5 share</strong> ${Number.isFinite(pct)?pct.toFixed(1):'0.0'}%
+      <span class="muted">(${cls})</span>
+    </div>
+    <div class="badge"><strong>${totalTxt}</strong></div>
+  `;
+}
+
+function renderTable(contrib){
+  if(!contrib || !contrib.items){
+    document.getElementById('table').innerHTML='<div class="muted">Upload a CSV to begin.</div>';
+    return;
+  }
+
+  const top = contrib.items.slice(0, 15);
+  let html=`<table><thead>
+    <tr>
+      <th>Rank</th>
+      <th>Artist</th>
+      <th class="right">Start UMV (£)</th>
+      <th class="right">End UMV (£)</th>
+      <th class="right">Δ UMV (£)</th>
+      <th class="right">Share</th>
+    </tr>
+  </thead><tbody>`;
+
+  top.forEach((d,i)=>{
+    const sharePct = (d.share*100);
+    html += `
+      <tr>
+        <td>${i+1}</td>
+        <td>${d.name}</td>
+        <td class="right">${Math.round(d.start).toLocaleString()}</td>
+        <td class="right">${Math.round(d.end).toLocaleString()}</td>
+        <td class="right">${Math.round(d.delta).toLocaleString()}</td>
+        <td class="right">${Number.isFinite(sharePct)?sharePct.toFixed(1):'0.0'}%</td>
+      </tr>`;
+  });
+
+  html += `</tbody></table>
+    <div class="small muted" style="margin-top:10px;">
+      Note: shares are calculated over the selected window using <b>${MODE==='positive'?'positive deltas only':'net deltas (including negatives)'}</b>.
+    </div>`;
+  document.getElementById('table').innerHTML = html;
+}
+
+/* ================== recompute + render ================== */
+function recomputeAndRender(){
+  if(!RAW || !GROUP || !SPINE) return;
+
+  const {s,e}=clampWindow();
+  const contrib = computeContributions(s,e);
+
+  renderBadges(contrib, s, e);
+  plotIndex();
+  plotShare(contrib);
+  renderTable(contrib);
+}
+
+/* ================== UI wiring ================== */
+const fileEl=document.getElementById('file');
+const btnLog=document.getElementById('btnLog');
+const smoothSel=document.getElementById('smoothK');
+const modeSel=document.getElementById('mode');
+const thSel=document.getElementById('threshold');
+
+const winStart=document.getElementById('winStart');
+const winEnd=document.getElementById('winEnd');
+
+const btnLast36=document.getElementById('btnLast36');
+const btnLast60=document.getElementById('btnLast60');
+const btnAll=document.getElementById('btnAll');
+
+const btnReset=document.getElementById('btnReset');
+
+function enableControls(on){
+  btnLog.disabled = !on;
+  smoothSel.disabled = !on;
+  modeSel.disabled = !on;
+  thSel.disabled = !on;
+  winStart.disabled = !on;
+  winEnd.disabled = !on;
+  btnLast36.disabled = !on;
+  btnLast60.disabled = !on;
+  btnAll.disabled = !on;
+  btnReset.disabled = !on;
+}
+
+fileEl.onchange=async e=>{
+  const f=e.target.files?.[0]; if(!f)return;
+
+  try{
+    const parsed=parseCSV(await f.text());
+    RAW=parsed.rows;
+    NAMES=parsed.names;
+
+    SMOOTH_K=parseInt(smoothSel.value,10);
+    MODE=modeSel.value;
+    THRESH=parseFloat(thSel.value);
+
+    // group + spine
+    GROUP=computeGroup(RAW);
+    SPINE=GROUP.spine;
+
+    // build artist cache once (for this smoothing setting)
+    IDS=[...new Set(RAW.map(r=>r.artist))];
+    ART_CACHE=new Map();
+    for(const id of IDS){
+      const obj = computeArtistUMV(RAW,id);
+      if(obj) ART_CACHE.set(id,obj);
+    }
+
+    // window selectors
+    fillWindowSelectors(SPINE);
+    setWindowLastNMonths(60); // default last 5y
+
+    enableControls(true);
+    recomputeAndRender();
+
+  }catch(err){
+    alert(err.message || String(err));
+    btnReset.click();
+  }
+};
+
+btnLog.onclick=()=>{
+  IS_LOG=!IS_LOG;
+  btnLog.textContent=IS_LOG?'Log scale: on':'Log scale: off';
+  plotIndex();
+};
+
+smoothSel.onchange=()=>{
+  if(!RAW) return;
+  SMOOTH_K=parseInt(smoothSel.value,10);
+
+  // recompute group + artist cache with new smoothing
+  GROUP=computeGroup(RAW);
+  SPINE=GROUP.spine;
+
+  ART_CACHE=new Map();
+  for(const id of IDS){
+    const obj=computeArtistUMV(RAW,id);
+    if(obj) ART_CACHE.set(id,obj);
+  }
+
+  // keep selected window if possible (selectors already based on SPINE)
+  fillWindowSelectors(SPINE);
+  setWindowLastNMonths(60);
+  recomputeAndRender();
+};
+
+modeSel.onchange=()=>{
+  MODE=modeSel.value;
+  recomputeAndRender();
+};
+
+thSel.onchange=()=>{
+  THRESH=parseFloat(thSel.value);
+  recomputeAndRender();
+};
+
+winStart.onchange=recomputeAndRender;
+winEnd.onchange=recomputeAndRender;
+
+btnLast36.onclick=()=>{ setWindowLastNMonths(36); recomputeAndRender(); };
+btnLast60.onclick=()=>{ setWindowLastNMonths(60); recomputeAndRender(); };
+btnAll.onclick=()=>{
+  winStart.value=String(SPINE[0]);
+  winEnd.value=String(SPINE[SPINE.length-1]);
+  recomputeAndRender();
+};
+
+btnReset.onclick=()=>{
+  RAW=null; NAMES=new Map();
+  GROUP=null; SPINE=null; ART_CACHE=new Map(); IDS=[];
+  IS_LOG=false; SMOOTH_K=3; MODE='positive'; THRESH=0.60;
+
+  btnLog.textContent='Log scale: off';
+  smoothSel.value='3';
+  modeSel.value='positive';
+  thSel.value='0.6';
+  document.getElementById('summaryBadges').innerHTML='';
+  Plotly.purge('chartIndex');
+  Plotly.purge('chartShare');
+  document.getElementById('table').innerHTML='<div class="muted">Upload a CSV to begin.</div>';
+
+  enableControls(false);
+  fileEl.value='';
+};
+
+enableControls(false);
+</script>
+</body>
+</html>
