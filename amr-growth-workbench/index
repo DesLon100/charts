@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AMR Internal: 5Y Growth Workbench (Lot-level → Monthly)</title>
+
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <style>
+    :root{
+      --bg:#ffffff; --fg:#111; --muted:#666; --card:#f6f6f7; --line:#e5e5e7;
+      --btn:#111; --btnfg:#fff; --shadow:0 6px 18px rgba(0,0,0,.08); --radius:14px;
+    }
+    body{margin:0;padding:14px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:transparent;color:var(--fg);}
+    .wrap{max-width:1100px;margin:0 auto;}
+    .title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+    .title h1{font-size:18px;margin:0;}
+    .title .sub{color:var(--muted);font-size:12px;}
+    .panel{margin-top:12px;background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;}
+    .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+    input[type="file"]{height:40px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;max-width:340px;}
+    select,input[type="number"]{height:40px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;min-width:160px;}
+    .btn{height:40px;padding:8px 12px;border-radius:12px;border:1px solid var(--btn);background:var(--btn);color:var(--btnfg);cursor:pointer;font-weight:600;}
+    .btn:disabled{opacity:.5;cursor:not-allowed;}
+    .grid{display:grid;grid-template-columns:1.4fr .6fr;gap:12px;}
+    @media (max-width:980px){.grid{grid-template-columns:1fr;}}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:10px;}
+    .card h3{margin:0 0 6px 0;font-size:13px;}
+    .kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+    .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 10px;}
+    .kpi .lab{font-size:11px;color:var(--muted);}
+    .kpi .val{font-size:14px;font-weight:700;margin-top:2px;}
+    .note{font-size:12px;color:var(--muted);line-height:1.35;}
+    .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+    .tab{padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-weight:600;font-size:12px;}
+    .tab.active{border-color:#111;}
+    .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;}
+    table{border-collapse:collapse;width:100%;min-width:860px;font-size:12px;}
+    th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
+    th{background:#fafafa;position:sticky;top:0;z-index:1;}
+    tr:hover td{background:#fbfbff;}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:11px;color:var(--muted);}
+  </style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="title">
+    <h1>AMR Internal: 5-Year Growth Workbench</h1>
+    <div class="sub">Upload lot-level CSV (ArtistID, ArtistName, MonthYYY=YYYYMM, ValueGBP=lot price). We derive monthly mean + lots.</div>
+  </div>
+
+  <div class="panel">
+    <div class="controls">
+      <input id="file" type="file" accept=".csv,text/csv" />
+      <select id="artistSelect" disabled>
+        <option value="">Upload data first…</option>
+      </select>
+
+      <label class="pill">Min lots / 24M</label>
+      <input id="minLots24" type="number" value="50" min="0" step="1" />
+
+      <label class="pill">Rolling (months)</label>
+      <input id="rollM" type="number" value="12" min="1" step="1" />
+
+      <label class="pill">Extra smooth (months)</label>
+      <input id="smoothM" type="number" value="5" min="1" step="1" />
+
+      <label class="pill">Trend window (months)</label>
+      <input id="trendM" type="number" value="60" min="12" step="1" />
+
+      <button id="btnRecalc" class="btn" disabled>Recalculate</button>
+      <button id="btnTop" class="btn" disabled>Show Top Artists</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Monthly Mean Price (Rolling + Smoothed) with Log-Linear Trend</h3>
+        <div id="chartPrice" style="height:420px;"></div>
+        <div class="note">
+          Pipeline: lot-level → monthly mean price & monthly lots → 12M rolling mean price → extra smoothing.
+          Trend is OLS on log(price) over last N months to get CAGR + predicted start/end.
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>KPIs (Selected Artist)</h3>
+        <div class="kpis" id="kpis"></div>
+        <div style="height:10px;"></div>
+
+        <h3>Market-cap Proxy (Price × Lots)</h3>
+        <div id="chartMcap" style="height:260px;"></div>
+        <div class="note">
+          Proxy = smoothed rolling mean price × smoothed rolling lots (lots summed over the same rolling window).
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-tab="cagr">Top by CAGR (trend-based)</div>
+      <div class="tab" data-tab="abs">Top by Absolute Δ Price (trend-based)</div>
+      <div class="tab" data-tab="mcap">Top by Abs Δ Mcap Proxy (trend-based)</div>
+      <div class="tab" data-tab="r2">Top by Trend Strength (R²)</div>
+    </div>
+
+    <div class="card" style="margin-top:10px;">
+      <h3>Rankings</h3>
+      <div class="tableWrap">
+        <table id="rankTable">
+          <thead><tr>
+            <th>Rank</th>
+            <th>Artist</th>
+            <th>CAGR</th>
+            <th>Abs Δ Price</th>
+            <th>Abs Δ Mcap</th>
+            <th>R²</th>
+            <th>Lots (last 24M)</th>
+            <th>Lots (last 12M)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="note" style="margin-top:8px;">
+        Eligibility rule: at least <span id="minLotsEcho">50</span> lots in the last 24 months.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================
+   Utilities
+============================ */
+function parseNumberLoose(v){
+  if(v === null || v === undefined) return NaN;
+  const s = String(v).trim().replace(/[£$€]/g,'').replace(/,/g,'').replace(/\s+/g,'');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+function splitCSVLine(line){
+  const out = [];
+  let cur = "", inQ = false;
+  for(let i=0;i<line.length;i++){
+    const ch = line[i];
+    if(ch === '"'){
+      if(inQ && line[i+1] === '"'){ cur += '"'; i++; }
+      else inQ = !inQ;
+    }else if(ch === "," && !inQ){
+      out.push(cur); cur = "";
+    }else{
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+function ymToDate(yyyymm){
+  const s = String(yyyymm).trim();
+  if(!/^\d{6}$/.test(s)) return null;
+  const y = Number(s.slice(0,4));
+  const m = Number(s.slice(4,6));
+  if(!(y>=1900 && m>=1 && m<=12)) return null;
+  return new Date(Date.UTC(y, m-1, 1));
+}
+function monthDiff(a, b){
+  return (b.getUTCFullYear()-a.getUTCFullYear())*12 + (b.getUTCMonth()-a.getUTCMonth());
+}
+function rollingMean(arr, win){
+  const out = [], q = [];
+  let sum = 0, cnt = 0;
+  for(let i=0;i<arr.length;i++){
+    const y = arr[i].y;
+    q.push(y);
+    if(Number.isFinite(y)){ sum += y; cnt += 1; }
+    if(q.length > win){
+      const old = q.shift();
+      if(Number.isFinite(old)){ sum -= old; cnt -= 1; }
+    }
+    const val = (q.length === win && cnt > 0) ? (sum / cnt) : NaN;
+    out.push({x: arr[i].x, y: val});
+  }
+  return out;
+}
+function rollingSum(arr, win){
+  const out = [], q = [];
+  let sum = 0;
+  for(let i=0;i<arr.length;i++){
+    const y = Number.isFinite(arr[i].y) ? arr[i].y : 0;
+    q.push(y);
+    sum += y;
+    if(q.length > win) sum -= q.shift();
+    out.push({x: arr[i].x, y: (q.length===win)?sum:NaN});
+  }
+  return out;
+}
+function ols(x, y){
+  const n = x.length;
+  if(n < 3) return null;
+  let sx=0, sy=0, sxx=0, sxy=0;
+  for(let i=0;i<n;i++){ sx+=x[i]; sy+=y[i]; sxx+=x[i]*x[i]; sxy+=x[i]*y[i]; }
+  const denom = (n*sxx - sx*sx);
+  if(Math.abs(denom) < 1e-12) return null;
+  const b = (n*sxy - sx*sy)/denom;
+  const a = (sy - b*sx)/n;
+
+  const yhat = x.map(t => a + b*t);
+  const ybar = sy/n;
+  let ssTot=0, ssRes=0;
+  for(let i=0;i<n;i++){
+    ssTot += (y[i]-ybar)*(y[i]-ybar);
+    ssRes += (y[i]-yhat[i])*(y[i]-yhat[i]);
+  }
+  const r2 = ssTot > 0 ? 1 - (ssRes/ssTot) : NaN;
+  return {a,b,r2};
+}
+function fmtPct(v){ return Number.isFinite(v) ? (v*100).toFixed(1)+"%" : "—"; }
+function fmtNum(v){
+  if(!Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if(abs >= 1e9) return (v/1e9).toFixed(2)+"B";
+  if(abs >= 1e6) return (v/1e6).toFixed(2)+"M";
+  if(abs >= 1e3) return (v/1e3).toFixed(2)+"k";
+  return Math.round(v).toString();
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m]));
+}
+
+/* ============================
+   State
+============================ */
+let lotRows = [];                  // parsed lot-level rows
+let monthlyByArtist = new Map();   // key "id|name" -> [{date, meanPrice, lots}]
+let artists = [];                  // list of artist keys
+let metricsByArtist = new Map();   // key -> computed metrics
+let currentArtist = null;
+
+const els = {
+  file: document.getElementById("file"),
+  artistSelect: document.getElementById("artistSelect"),
+  minLots24: document.getElementById("minLots24"),
+  rollM: document.getElementById("rollM"),
+  smoothM: document.getElementById("smoothM"),
+  trendM: document.getElementById("trendM"),
+  btnRecalc: document.getElementById("btnRecalc"),
+  btnTop: document.getElementById("btnTop"),
+  kpis: document.getElementById("kpis"),
+  rankBody: document.querySelector("#rankTable tbody"),
+  tabs: Array.from(document.querySelectorAll(".tab")),
+  minLotsEcho: document.getElementById("minLotsEcho"),
+};
+
+/* ============================
+   Parse lot-level CSV
+============================ */
+function parseLotCSV(text){
+  const lines = text.replace(/\r/g,'').split("\n").filter(l => l.trim().length);
+  if(lines.length < 2) return [];
+
+  const headers = splitCSVLine(lines[0]).map(h => h.trim());
+  const idx = (name) => headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
+
+  const iID = idx("ArtistID");
+  const iName = idx("ArtistName");
+  const iMonth = idx("MonthYYY");
+  const iVal = idx("ValueGBP");
+
+  if(iID < 0 || iName < 0 || iMonth < 0 || iVal < 0){
+    throw new Error("CSV must include headers: ArtistID, ArtistName, MonthYYY, ValueGBP");
+  }
+
+  const rows = [];
+  for(let i=1;i<lines.length;i++){
+    const cells = splitCSVLine(lines[i]);
+    const id = (cells[iID] ?? "").trim();
+    const name = (cells[iName] ?? "").trim();
+    const dt = ymToDate(cells[iMonth]);
+    const price = parseNumberLoose(cells[iVal]);
+    if(!id || !name || !dt || !Number.isFinite(price) || price <= 0) continue;
+    rows.push({id, name, date: dt, price});
+  }
+  return rows;
+}
+
+/* ============================
+   Aggregate to monthly mean price + monthly lots
+============================ */
+function buildMonthlyFromLots(){
+  monthlyByArtist = new Map();
+
+  // artistKey -> monthTime -> {sum, cnt}
+  const map = new Map();
+
+  let minD = null, maxD = null;
+
+  for(const r of lotRows){
+    if(!minD || r.date < minD) minD = r.date;
+    if(!maxD || r.date > maxD) maxD = r.date;
+
+    const akey = `${r.id}|${r.name}`;
+    const mkey = r.date.getTime();
+
+    if(!map.has(akey)) map.set(akey, new Map());
+    const mm = map.get(akey);
+    if(!mm.has(mkey)) mm.set(mkey, {sum:0, cnt:0});
+    const agg = mm.get(mkey);
+    agg.sum += r.price;
+    agg.cnt += 1;
+  }
+
+  // Global timeline (monthly) from min to max so rolling windows align
+  const timeline = [];
+  let cur = new Date(Date.UTC(minD.getUTCFullYear(), minD.getUTCMonth(), 1));
+  const end = new Date(Date.UTC(maxD.getUTCFullYear(), maxD.getUTCMonth(), 1));
+  while(cur <= end){
+    timeline.push(new Date(cur));
+    cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth()+1, 1));
+  }
+
+  for(const [akey, mm] of map.entries()){
+    const series = [];
+    for(const dt of timeline){
+      const k = dt.getTime();
+      const agg = mm.get(k);
+      if(agg){
+        series.push({date: dt, meanPrice: agg.sum / agg.cnt, lots: agg.cnt});
+      }else{
+        series.push({date: dt, meanPrice: NaN, lots: 0});
+      }
+    }
+    monthlyByArtist.set(akey, series);
+  }
+
+  artists = Array.from(monthlyByArtist.keys()).sort((a,b)=>{
+    const an = a.split("|")[1].toLowerCase();
+    const bn = b.split("|")[1].toLowerCase();
+    return an.localeCompare(bn);
+  });
+}
+
+/* ============================
+   Metrics per artist
+============================ */
+function computeMetrics(akey, params){
+  const series = monthlyByArtist.get(akey);
+  if(!series || series.length < 24) return null;
+
+  const roll = params.rollM;
+  const smooth = params.smoothM;
+  const trendWin = params.trendM;
+
+  const meanArr = series.map(d => ({x:d.date, y:d.meanPrice}));
+  const lotsMonthlyArr = series.map(d => ({x:d.date, y:d.lots}));
+
+  // rolling mean price and extra smoothing
+  const rollMean = rollingMean(meanArr, roll);
+  const smoothMean = rollingMean(rollMean, smooth);
+
+  // rolling lots is a SUM over months (same window) + extra smoothing
+  const rollLots = rollingSum(lotsMonthlyArr, roll);
+  const smoothLots = rollingMean(rollLots, smooth);
+
+  // mcap proxy
+  const mcap = smoothMean.map((pt,i)=>{
+    const L = smoothLots[i]?.y;
+    const y = (Number.isFinite(pt.y) && Number.isFinite(L)) ? (pt.y * L) : NaN;
+    return {x: pt.x, y};
+  });
+
+  // lots last 24/12 months (raw lots)
+  const lastDate = series[series.length-1].date;
+  const last24Start = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-23, 1));
+  const last12Start = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-11, 1));
+  let lots24=0, lots12=0;
+  for(const d of series){
+    if(d.date >= last24Start) lots24 += d.lots;
+    if(d.date >= last12Start) lots12 += d.lots;
+  }
+  const eligible = lots24 >= params.minLots24;
+
+  // trend on log(smoothed mean price)
+  const startTrend = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-(trendWin-1), 1));
+  const x=[], y=[];
+  for(const pt of smoothMean){
+    if(pt.x < startTrend) continue;
+    if(!Number.isFinite(pt.y) || pt.y <= 0) continue;
+    x.push(monthDiff(startTrend, pt.x));
+    y.push(Math.log(pt.y));
+  }
+  const fit = ols(x,y);
+
+  let cagr=NaN, r2=NaN, predStart=NaN, predEnd=NaN, absDelta=NaN;
+  const trendLine = smoothMean.map(pt => ({x:pt.x, y:NaN}));
+
+  if(fit){
+    r2 = fit.r2;
+    cagr = Math.exp(fit.b * 12) - 1;
+    const t0=0, t1=trendWin-1;
+    predStart = Math.exp(fit.a + fit.b*t0);
+    predEnd   = Math.exp(fit.a + fit.b*t1);
+    absDelta  = predEnd - predStart;
+
+    for(let i=0;i<trendLine.length;i++){
+      const dt = trendLine[i].x;
+      if(dt < startTrend) continue;
+      const t = monthDiff(startTrend, dt);
+      if(t < 0 || t > t1) continue;
+      trendLine[i].y = Math.exp(fit.a + fit.b*t);
+    }
+  }
+
+  // trend on log(mcap) for Δ mcap
+  const xm=[], ym=[];
+  for(const pt of mcap){
+    if(pt.x < startTrend) continue;
+    if(!Number.isFinite(pt.y) || pt.y <= 0) continue;
+    xm.push(monthDiff(startTrend, pt.x));
+    ym.push(Math.log(pt.y));
+  }
+  const fitM = ols(xm, ym);
+  let mcapDelta=NaN;
+  const mcapTrend = mcap.map(pt => ({x:pt.x, y:NaN}));
+  if(fitM){
+    const t0=0, t1=trendWin-1;
+    const m0 = Math.exp(fitM.a + fitM.b*t0);
+    const m1 = Math.exp(fitM.a + fitM.b*t1);
+    mcapDelta = m1 - m0;
+
+    for(let i=0;i<mcapTrend.length;i++){
+      const dt = mcapTrend[i].x;
+      if(dt < startTrend) continue;
+      const t = monthDiff(startTrend, dt);
+      if(t < 0 || t > t1) continue;
+      mcapTrend[i].y = Math.exp(fitM.a + fitM.b*t);
+    }
+  }
+
+  return {
+    akey,
+    artistName: akey.split("|")[1],
+    eligible,
+    lots24,
+    lots12,
+    smoothMean,
+    trendLine,
+    mcap,
+    mcapTrend,
+    cagr,
+    absDelta,
+    mcapDelta,
+    r2,
+    predStart,
+    predEnd
+  };
+}
+
+function recalcAll(){
+  const params = {
+    minLots24: Math.max(0, Number(els.minLots24.value || 0)),
+    rollM: Math.max(1, Number(els.rollM.value || 12)),
+    smoothM: Math.max(1, Number(els.smoothM.value || 5)),
+    trendM: Math.max(12, Number(els.trendM.value || 60))
+  };
+  els.minLotsEcho.textContent = String(params.minLots24);
+
+  metricsByArtist = new Map();
+  for(const a of artists){
+    const m = computeMetrics(a, params);
+    if(m) metricsByArtist.set(a, m);
+  }
+
+  if(currentArtist && metricsByArtist.has(currentArtist)) renderArtist(currentArtist);
+  renderRankings("cagr");
+}
+
+/* ============================
+   Rendering
+============================ */
+function renderArtist(akey){
+  const m = metricsByArtist.get(akey);
+  if(!m) return;
+
+  const kpis = [
+    {lab:"CAGR (trend-based, 5Y)", val: fmtPct(m.cagr)},
+    {lab:"Trend strength (R²)", val: Number.isFinite(m.r2) ? m.r2.toFixed(2) : "—"},
+    {lab:"Abs Δ Price (trend-based)", val: fmtNum(m.absDelta)},
+    {lab:"Abs Δ Mcap (trend-based)", val: fmtNum(m.mcapDelta)},
+    {lab:"Lots (last 24M)", val: fmtNum(m.lots24)},
+    {lab:"Lots (last 12M)", val: fmtNum(m.lots12)},
+    {lab:"Eligibility (min lots)", val: m.eligible ? "Yes" : "No"},
+    {lab:"Trend start → end (pred)", val: (Number.isFinite(m.predStart)&&Number.isFinite(m.predEnd)) ? `${fmtNum(m.predStart)} → ${fmtNum(m.predEnd)}` : "—"},
+  ];
+  els.kpis.innerHTML = kpis.map(k => `
+    <div class="kpi"><div class="lab">${k.lab}</div><div class="val">${k.val}</div></div>
+  `).join("");
+
+  // Price chart
+  const x = m.smoothMean.map(p => p.x);
+  const y = m.smoothMean.map(p => p.y);
+  const yt = m.trendLine.map(p => p.y);
+
+  Plotly.newPlot("chartPrice", [
+    {x, y, type:"scatter", mode:"lines", name:"Smoothed rolling mean price"},
+    {x, y: yt, type:"scatter", mode:"lines", name:"Trend (log-linear → level)"},
+  ], {
+    margin:{l:50,r:20,t:10,b:40},
+    yaxis:{title:"Mean Price (GBP)"},
+    legend:{orientation:"h", y:-0.2},
+    hovermode:"x unified",
+    paper_bgcolor:"rgba(0,0,0,0)",
+    plot_bgcolor:"rgba(0,0,0,0)"
+  }, {displayModeBar:false, responsive:true});
+
+  // Mcap chart
+  const xm = m.mcap.map(p => p.x);
+  const ym = m.mcap.map(p => p.y);
+  const ymt = m.mcapTrend.map(p => p.y);
+
+  Plotly.newPlot("chartMcap", [
+    {x:xm, y:ym, type:"scatter", mode:"lines", name:"Mcap proxy (price × lots)"},
+    {x:xm, y:ymt, type:"scatter", mode:"lines", name:"Mcap trend (log-linear → level)"},
+  ], {
+    margin:{l:50,r:20,t:10,b:40},
+    yaxis:{title:"Mcap Proxy"},
+    legend:{orientation:"h", y:-0.25},
+    hovermode:"x unified",
+    paper_bgcolor:"rgba(0,0,0,0)",
+    plot_bgcolor:"rgba(0,0,0,0)"
+  }, {displayModeBar:false, responsive:true});
+}
+
+function renderRankings(which){
+  const rows = [];
+  for(const m of metricsByArtist.values()){
+    if(!m.eligible) continue;
+    rows.push(m);
+  }
+  const keyFn = {
+    cagr: (m) => m.cagr,
+    abs:  (m) => m.absDelta,
+    mcap: (m) => m.mcapDelta,
+    r2:   (m) => m.r2
+  }[which];
+
+  rows.sort((a,b)=>{
+    const av = keyFn(a), bv = keyFn(b);
+    if(!Number.isFinite(av) && !Number.isFinite(bv)) return 0;
+    if(!Number.isFinite(av)) return 1;
+    if(!Number.isFinite(bv)) return -1;
+    return bv - av;
+  });
+
+  const top = rows.slice(0, 50);
+  els.rankBody.innerHTML = top.map((m,i) => `
+    <tr>
+      <td>${i+1}</td>
+      <td><a href="#" data-k="${escapeHtml(m.akey)}">${escapeHtml(m.artistName)}</a></td>
+      <td>${fmtPct(m.cagr)}</td>
+      <td>${fmtNum(m.absDelta)}</td>
+      <td>${fmtNum(m.mcapDelta)}</td>
+      <td>${Number.isFinite(m.r2) ? m.r2.toFixed(2) : "—"}</td>
+      <td>${fmtNum(m.lots24)}</td>
+      <td>${fmtNum(m.lots12)}</td>
+    </tr>
+  `).join("");
+
+  els.rankBody.querySelectorAll("a[data-k]").forEach(a=>{
+    a.addEventListener("click", (e)=>{
+      e.preventDefault();
+      const k = e.currentTarget.getAttribute("data-k");
+      els.artistSelect.value = k;
+      currentArtist = k;
+      renderArtist(k);
+    });
+  });
+}
+
+/* ============================
+   Events
+============================ */
+els.file.addEventListener("change", async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+
+  const text = await f.text();
+  try{
+    lotRows = parseLotCSV(text);
+  }catch(err){
+    alert(err.message || String(err));
+    return;
+  }
+  if(!lotRows.length){
+    alert("No valid lot rows found. Check columns + ValueGBP numeric + MonthYYY = YYYYMM.");
+    return;
+  }
+
+  buildMonthlyFromLots();
+
+  els.artistSelect.innerHTML =
+    `<option value="">Select artist…</option>` +
+    artists.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k.split("|")[1])}</option>`).join("");
+  els.artistSelect.disabled = false;
+  els.btnRecalc.disabled = false;
+  els.btnTop.disabled = false;
+
+  currentArtist = artists[0];
+  els.artistSelect.value = currentArtist;
+
+  recalcAll();
+  renderArtist(currentArtist);
+});
+
+els.artistSelect.addEventListener("change", ()=>{
+  const k = els.artistSelect.value;
+  if(!k) return;
+  currentArtist = k;
+  renderArtist(k);
+});
+
+els.btnRecalc.addEventListener("click", ()=>{
+  if(!artists.length) return;
+  recalcAll();
+});
+
+els.btnTop.addEventListener("click", ()=>{
+  document.getElementById("rankTable").scrollIntoView({behavior:"smooth", block:"start"});
+});
+
+els.tabs.forEach(t=>{
+  t.addEventListener("click", ()=>{
+    els.tabs.forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    renderRankings(t.getAttribute("data-tab"));
+  });
+});
+</script>
+</body>
+</html>
