@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AMR Internal: 5Y Growth Workbench (Lot-level → Monthly)</title>
+  <title>AMR Internal: 5Y Growth Workbench (Mean/Median + Concentration)</title>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 
@@ -13,7 +13,7 @@
       --btn:#111; --btnfg:#fff; --shadow:0 6px 18px rgba(0,0,0,.08); --radius:14px;
     }
     body{margin:0;padding:14px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:transparent;color:var(--fg);}
-    .wrap{max-width:1100px;margin:0 auto;}
+    .wrap{max-width:1180px;margin:0 auto;}
     .title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
     .title h1{font-size:18px;margin:0;}
     .title .sub{color:var(--muted);font-size:12px;}
@@ -23,7 +23,7 @@
     select,input[type="number"]{height:40px;padding:8px 10px;border:1px solid var(--line);border-radius:12px;background:#fff;min-width:160px;}
     .btn{height:40px;padding:8px 12px;border-radius:12px;border:1px solid var(--btn);background:var(--btn);color:var(--btnfg);cursor:pointer;font-weight:600;}
     .btn:disabled{opacity:.5;cursor:not-allowed;}
-    .grid{display:grid;grid-template-columns:1.4fr .6fr;gap:12px;}
+    .grid{display:grid;grid-template-columns:1.35fr .65fr;gap:12px;}
     @media (max-width:980px){.grid{grid-template-columns:1fr;}}
     .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:10px;}
     .card h3{margin:0 0 6px 0;font-size:13px;}
@@ -36,7 +36,7 @@
     .tab{padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-weight:600;font-size:12px;}
     .tab.active{border-color:#111;}
     .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;}
-    table{border-collapse:collapse;width:100%;min-width:860px;font-size:12px;}
+    table{border-collapse:collapse;width:100%;min-width:1160px;font-size:12px;}
     th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
     th{background:#fafafa;position:sticky;top:0;z-index:1;}
     tr:hover td{background:#fbfbff;}
@@ -48,7 +48,7 @@
 <div class="wrap">
   <div class="title">
     <h1>AMR Internal: 5-Year Growth Workbench</h1>
-    <div class="sub">Upload lot-level CSV (ArtistID, ArtistName, MonthYYY=YYYYMM, ValueGBP=lot price). We derive monthly mean + lots.</div>
+    <div class="sub">Lot-level upload → monthly mean/median + lots → trend CAGR + Mcap proxy + concentration</div>
   </div>
 
   <div class="panel">
@@ -76,11 +76,11 @@
 
     <div class="grid">
       <div class="card">
-        <h3>Monthly Mean Price (Rolling + Smoothed) with Log-Linear Trend</h3>
-        <div id="chartPrice" style="height:420px;"></div>
+        <h3>Monthly Mean & Median Price (Rolling + Smoothed) with Log-Linear Trends</h3>
+        <div id="chartPrice" style="height:440px;"></div>
         <div class="note">
-          Pipeline: lot-level → monthly mean price & monthly lots → 12M rolling mean price → extra smoothing.
-          Trend is OLS on log(price) over last N months to get CAGR + predicted start/end.
+          Pipeline: lot-level → monthly mean + monthly median + monthly lots → 12M rolling mean → extra smoothing.
+          Trend: OLS on log(series) over the last N months → CAGR + predicted start/end. Mean/median divergence is a concentration flag.
         </div>
       </div>
 
@@ -90,18 +90,24 @@
         <div style="height:10px;"></div>
 
         <h3>Market-cap Proxy (Price × Lots)</h3>
-        <div id="chartMcap" style="height:260px;"></div>
+        <div id="chartMcap" style="height:230px;"></div>
+        <div class="note">Proxy = smoothed rolling mean price × smoothed rolling lots (lots summed over the same rolling window).</div>
+
+        <div style="height:10px;"></div>
+        <h3>Concentration (Top Decile Value Share)</h3>
+        <div id="chartConc" style="height:230px;"></div>
         <div class="note">
-          Proxy = smoothed rolling mean price × smoothed rolling lots (lots summed over the same rolling window).
+          For each year in the 5Y window: top 10% of lots by price / total annual value. Rising share = trophy concentration.
         </div>
       </div>
     </div>
 
     <div class="tabs">
-      <div class="tab active" data-tab="cagr">Top by CAGR (trend-based)</div>
-      <div class="tab" data-tab="abs">Top by Absolute Δ Price (trend-based)</div>
+      <div class="tab active" data-tab="cagr">Top by Mean CAGR (trend-based)</div>
+      <div class="tab" data-tab="abs">Top by Abs Δ Mean Price (trend-based)</div>
       <div class="tab" data-tab="mcap">Top by Abs Δ Mcap Proxy (trend-based)</div>
       <div class="tab" data-tab="r2">Top by Trend Strength (R²)</div>
+      <div class="tab" data-tab="conc">Top by Concentration Increase (5Y)</div>
     </div>
 
     <div class="card" style="margin-top:10px;">
@@ -111,10 +117,15 @@
           <thead><tr>
             <th>Rank</th>
             <th>Artist</th>
-            <th>CAGR</th>
-            <th>Abs Δ Price</th>
+            <th>Mean CAGR</th>
+            <th>Median CAGR</th>
+            <th>Mean–Median CAGR Δ</th>
+            <th>Mean/Median Ratio Shift</th>
+            <th>Abs Δ Mean Price</th>
             <th>Abs Δ Mcap</th>
-            <th>R²</th>
+            <th>Top-Decile Share (Latest Yr)</th>
+            <th>Δ Top-Decile Share (5Y)</th>
+            <th>R² (Mean)</th>
             <th>Lots (last 24M)</th>
             <th>Lots (last 12M)</th>
           </tr></thead>
@@ -215,6 +226,8 @@ function ols(x, y){
   return {a,b,r2};
 }
 function fmtPct(v){ return Number.isFinite(v) ? (v*100).toFixed(1)+"%" : "—"; }
+function fmtPct2(v){ return Number.isFinite(v) ? (v*100).toFixed(2)+"%" : "—"; }
+function fmtShare(v){ return Number.isFinite(v) ? (v*100).toFixed(1)+"%" : "—"; }
 function fmtNum(v){
   if(!Number.isFinite(v)) return "—";
   const abs = Math.abs(v);
@@ -230,10 +243,11 @@ function escapeHtml(s){
 /* ============================
    State
 ============================ */
-let lotRows = [];                  // parsed lot-level rows
-let monthlyByArtist = new Map();   // key "id|name" -> [{date, meanPrice, lots}]
-let artists = [];                  // list of artist keys
-let metricsByArtist = new Map();   // key -> computed metrics
+let lotRows = [];                  // {id,name,date,price}
+let monthlyByArtist = new Map();   // key "id|name" -> [{date, meanPrice, medianPrice, lots}]
+let annualByArtist = new Map();    // key -> Map(year -> prices[])
+let artists = [];
+let metricsByArtist = new Map();
 let currentArtist = null;
 
 const els = {
@@ -284,13 +298,14 @@ function parseLotCSV(text){
 }
 
 /* ============================
-   Aggregate to monthly mean price + monthly lots
+   Aggregate: Monthly mean/median/lots + Annual price lists
 ============================ */
-function buildMonthlyFromLots(){
+function buildAggregates(){
   monthlyByArtist = new Map();
+  annualByArtist = new Map();
 
-  // artistKey -> monthTime -> {sum, cnt}
-  const map = new Map();
+  // Monthly aggregation holder: artistKey -> monthTime -> {sum,cnt,prices[]}
+  const monthMap = new Map();
 
   let minD = null, maxD = null;
 
@@ -301,15 +316,23 @@ function buildMonthlyFromLots(){
     const akey = `${r.id}|${r.name}`;
     const mkey = r.date.getTime();
 
-    if(!map.has(akey)) map.set(akey, new Map());
-    const mm = map.get(akey);
-    if(!mm.has(mkey)) mm.set(mkey, {sum:0, cnt:0});
+    if(!monthMap.has(akey)) monthMap.set(akey, new Map());
+    const mm = monthMap.get(akey);
+    if(!mm.has(mkey)) mm.set(mkey, {sum:0, cnt:0, prices:[]});
     const agg = mm.get(mkey);
     agg.sum += r.price;
     agg.cnt += 1;
+    agg.prices.push(r.price);
+
+    // annual list for concentration
+    const yr = r.date.getUTCFullYear();
+    if(!annualByArtist.has(akey)) annualByArtist.set(akey, new Map());
+    const am = annualByArtist.get(akey);
+    if(!am.has(yr)) am.set(yr, []);
+    am.get(yr).push(r.price);
   }
 
-  // Global timeline (monthly) from min to max so rolling windows align
+  // Global monthly timeline (ensures aligned rolling windows)
   const timeline = [];
   let cur = new Date(Date.UTC(minD.getUTCFullYear(), minD.getUTCMonth(), 1));
   const end = new Date(Date.UTC(maxD.getUTCFullYear(), maxD.getUTCMonth(), 1));
@@ -318,15 +341,18 @@ function buildMonthlyFromLots(){
     cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth()+1, 1));
   }
 
-  for(const [akey, mm] of map.entries()){
+  for(const [akey, mm] of monthMap.entries()){
     const series = [];
     for(const dt of timeline){
       const k = dt.getTime();
       const agg = mm.get(k);
       if(agg){
-        series.push({date: dt, meanPrice: agg.sum / agg.cnt, lots: agg.cnt});
+        const prices = agg.prices.slice().sort((a,b)=>a-b);
+        const mid = Math.floor(prices.length/2);
+        const median = (prices.length % 2) ? prices[mid] : (prices[mid-1] + prices[mid]) / 2;
+        series.push({date: dt, meanPrice: agg.sum / agg.cnt, medianPrice: median, lots: agg.cnt});
       }else{
-        series.push({date: dt, meanPrice: NaN, lots: 0});
+        series.push({date: dt, meanPrice: NaN, medianPrice: NaN, lots: 0});
       }
     }
     monthlyByArtist.set(akey, series);
@@ -337,6 +363,24 @@ function buildMonthlyFromLots(){
     const bn = b.split("|")[1].toLowerCase();
     return an.localeCompare(bn);
   });
+}
+
+/* ============================
+   Concentration: Top Decile Value Share per year
+   (top 10% lots by price / total annual value)
+============================ */
+function topDecileShare(prices){
+  // prices: number[] (positive)
+  if(!prices || prices.length < 10) return NaN; // too few lots to define decile meaningfully
+  const sorted = prices.slice().sort((a,b)=>a-b);
+  const n = sorted.length;
+  const k = Math.max(1, Math.ceil(n * 0.10)); // top 10%
+  let total = 0;
+  for(const v of sorted) total += v;
+  if(total <= 0) return NaN;
+  let top = 0;
+  for(let i=n-k;i<n;i++) top += sorted[i];
+  return top / total; // 0..1
 }
 
 /* ============================
@@ -351,24 +395,29 @@ function computeMetrics(akey, params){
   const trendWin = params.trendM;
 
   const meanArr = series.map(d => ({x:d.date, y:d.meanPrice}));
+  const medianArr = series.map(d => ({x:d.date, y:d.medianPrice}));
   const lotsMonthlyArr = series.map(d => ({x:d.date, y:d.lots}));
 
-  // rolling mean price and extra smoothing
+  // Mean pipeline
   const rollMean = rollingMean(meanArr, roll);
   const smoothMean = rollingMean(rollMean, smooth);
 
-  // rolling lots is a SUM over months (same window) + extra smoothing
+  // Median pipeline
+  const rollMedian = rollingMean(medianArr, roll);
+  const smoothMedian = rollingMean(rollMedian, smooth);
+
+  // Rolling lots (sum over months) + extra smooth
   const rollLots = rollingSum(lotsMonthlyArr, roll);
   const smoothLots = rollingMean(rollLots, smooth);
 
-  // mcap proxy
+  // Mcap proxy
   const mcap = smoothMean.map((pt,i)=>{
     const L = smoothLots[i]?.y;
     const y = (Number.isFinite(pt.y) && Number.isFinite(L)) ? (pt.y * L) : NaN;
     return {x: pt.x, y};
   });
 
-  // lots last 24/12 months (raw lots)
+  // Lots last 24/12 months (raw)
   const lastDate = series[series.length-1].date;
   const last24Start = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-23, 1));
   const last12Start = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-11, 1));
@@ -379,8 +428,10 @@ function computeMetrics(akey, params){
   }
   const eligible = lots24 >= params.minLots24;
 
-  // trend on log(smoothed mean price)
+  // Trend window start
   const startTrend = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-(trendWin-1), 1));
+
+  // ===== Mean trend (log-linear)
   const x=[], y=[];
   for(const pt of smoothMean){
     if(pt.x < startTrend) continue;
@@ -390,35 +441,73 @@ function computeMetrics(akey, params){
   }
   const fit = ols(x,y);
 
-  let cagr=NaN, r2=NaN, predStart=NaN, predEnd=NaN, absDelta=NaN;
-  const trendLine = smoothMean.map(pt => ({x:pt.x, y:NaN}));
+  let meanCagr=NaN, r2=NaN, meanStart=NaN, meanEnd=NaN, absDelta=NaN;
+  const meanTrendLine = smoothMean.map(pt => ({x:pt.x, y:NaN}));
 
   if(fit){
     r2 = fit.r2;
-    cagr = Math.exp(fit.b * 12) - 1;
+    meanCagr = Math.exp(fit.b * 12) - 1;
     const t0=0, t1=trendWin-1;
-    predStart = Math.exp(fit.a + fit.b*t0);
-    predEnd   = Math.exp(fit.a + fit.b*t1);
-    absDelta  = predEnd - predStart;
+    meanStart = Math.exp(fit.a + fit.b*t0);
+    meanEnd   = Math.exp(fit.a + fit.b*t1);
+    absDelta  = meanEnd - meanStart;
 
-    for(let i=0;i<trendLine.length;i++){
-      const dt = trendLine[i].x;
+    for(let i=0;i<meanTrendLine.length;i++){
+      const dt = meanTrendLine[i].x;
       if(dt < startTrend) continue;
       const t = monthDiff(startTrend, dt);
       if(t < 0 || t > t1) continue;
-      trendLine[i].y = Math.exp(fit.a + fit.b*t);
+      meanTrendLine[i].y = Math.exp(fit.a + fit.b*t);
     }
   }
 
-  // trend on log(mcap) for Δ mcap
+  // ===== Median trend (log-linear)
   const xm=[], ym=[];
-  for(const pt of mcap){
+  for(const pt of smoothMedian){
     if(pt.x < startTrend) continue;
     if(!Number.isFinite(pt.y) || pt.y <= 0) continue;
     xm.push(monthDiff(startTrend, pt.x));
     ym.push(Math.log(pt.y));
   }
-  const fitM = ols(xm, ym);
+  const fitMed = ols(xm, ym);
+
+  let medianCagr=NaN, medianStart=NaN, medianEnd=NaN;
+  const medianTrendLine = smoothMedian.map(pt => ({x:pt.x, y:NaN}));
+
+  if(fitMed){
+    medianCagr = Math.exp(fitMed.b * 12) - 1;
+    const t0=0, t1=trendWin-1;
+    medianStart = Math.exp(fitMed.a + fitMed.b*t0);
+    medianEnd   = Math.exp(fitMed.a + fitMed.b*t1);
+
+    for(let i=0;i<medianTrendLine.length;i++){
+      const dt = medianTrendLine[i].x;
+      if(dt < startTrend) continue;
+      const t = monthDiff(startTrend, dt);
+      if(t < 0 || t > t1) continue;
+      medianTrendLine[i].y = Math.exp(fitMed.a + fitMed.b*t);
+    }
+  }
+
+  // ===== Divergence flags
+  const cagrDivergence = (Number.isFinite(meanCagr) && Number.isFinite(medianCagr)) ? (meanCagr - medianCagr) : NaN;
+
+  let ratioStart=NaN, ratioEnd=NaN, ratioShift=NaN;
+  if(Number.isFinite(meanStart) && Number.isFinite(medianStart) && Number.isFinite(meanEnd) && Number.isFinite(medianEnd) && medianStart>0 && medianEnd>0){
+    ratioStart = meanStart / medianStart;
+    ratioEnd = meanEnd / medianEnd;
+    ratioShift = ratioEnd - ratioStart;
+  }
+
+  // ===== Mcap trend delta (log-linear on mcap)
+  const xk=[], yk=[];
+  for(const pt of mcap){
+    if(pt.x < startTrend) continue;
+    if(!Number.isFinite(pt.y) || pt.y <= 0) continue;
+    xk.push(monthDiff(startTrend, pt.x));
+    yk.push(Math.log(pt.y));
+  }
+  const fitM = ols(xk, yk);
   let mcapDelta=NaN;
   const mcapTrend = mcap.map(pt => ({x:pt.x, y:NaN}));
   if(fitM){
@@ -436,22 +525,54 @@ function computeMetrics(akey, params){
     }
   }
 
+  // ===== Concentration (annual top-decile share) in window years
+  const startYear = startTrend.getUTCFullYear();
+  const endYear = lastDate.getUTCFullYear();
+  const annualMap = annualByArtist.get(akey) || new Map();
+
+  const concSeries = []; // [{year, share}]
+  for(let yr=startYear; yr<=endYear; yr++){
+    const prices = annualMap.get(yr);
+    const share = topDecileShare(prices);
+    if(Number.isFinite(share)) concSeries.push({year: yr, share});
+  }
+
+  // latest & 5Y change: use first/last available within window
+  let concLatest = NaN, concDelta5y = NaN;
+  if(concSeries.length >= 2){
+    concLatest = concSeries[concSeries.length-1].share;
+    concDelta5y = concSeries[concSeries.length-1].share - concSeries[0].share;
+  } else if(concSeries.length === 1){
+    concLatest = concSeries[0].share;
+  }
+
   return {
     akey,
     artistName: akey.split("|")[1],
     eligible,
     lots24,
     lots12,
+
     smoothMean,
-    trendLine,
+    meanTrendLine,
+    smoothMedian,
+    medianTrendLine,
+
+    meanCagr,
+    medianCagr,
+    cagrDivergence,
+    ratioShift,
+
+    absDelta,
+    r2,
+
     mcap,
     mcapTrend,
-    cagr,
-    absDelta,
     mcapDelta,
-    r2,
-    predStart,
-    predEnd
+
+    concSeries,
+    concLatest,
+    concDelta5y
   };
 }
 
@@ -482,31 +603,40 @@ function renderArtist(akey){
   if(!m) return;
 
   const kpis = [
-    {lab:"CAGR (trend-based, 5Y)", val: fmtPct(m.cagr)},
-    {lab:"Trend strength (R²)", val: Number.isFinite(m.r2) ? m.r2.toFixed(2) : "—"},
-    {lab:"Abs Δ Price (trend-based)", val: fmtNum(m.absDelta)},
+    {lab:"Mean CAGR (trend-based, 5Y)", val: fmtPct(m.meanCagr)},
+    {lab:"Median CAGR (trend-based, 5Y)", val: fmtPct(m.medianCagr)},
+    {lab:"Mean–Median CAGR Δ", val: fmtPct(m.cagrDivergence)},
+    {lab:"Mean/Median Ratio Shift (5Y)", val: Number.isFinite(m.ratioShift) ? m.ratioShift.toFixed(2) : "—"},
+    {lab:"Abs Δ Mean Price (trend-based)", val: fmtNum(m.absDelta)},
     {lab:"Abs Δ Mcap (trend-based)", val: fmtNum(m.mcapDelta)},
+    {lab:"Top-Decile Share (Latest Yr)", val: fmtShare(m.concLatest)},
+    {lab:"Δ Top-Decile Share (5Y)", val: fmtShare(m.concDelta5y)},
+    {lab:"Trend strength (R², mean)", val: Number.isFinite(m.r2) ? m.r2.toFixed(2) : "—"},
     {lab:"Lots (last 24M)", val: fmtNum(m.lots24)},
     {lab:"Lots (last 12M)", val: fmtNum(m.lots12)},
     {lab:"Eligibility (min lots)", val: m.eligible ? "Yes" : "No"},
-    {lab:"Trend start → end (pred)", val: (Number.isFinite(m.predStart)&&Number.isFinite(m.predEnd)) ? `${fmtNum(m.predStart)} → ${fmtNum(m.predEnd)}` : "—"},
   ];
   els.kpis.innerHTML = kpis.map(k => `
     <div class="kpi"><div class="lab">${k.lab}</div><div class="val">${k.val}</div></div>
   `).join("");
 
-  // Price chart
+  // Price chart: mean + mean trend + median + median trend
   const x = m.smoothMean.map(p => p.x);
-  const y = m.smoothMean.map(p => p.y);
-  const yt = m.trendLine.map(p => p.y);
+  const yMean = m.smoothMean.map(p => p.y);
+  const yMeanT = m.meanTrendLine.map(p => p.y);
+
+  const yMed = m.smoothMedian.map(p => p.y);
+  const yMedT = m.medianTrendLine.map(p => p.y);
 
   Plotly.newPlot("chartPrice", [
-    {x, y, type:"scatter", mode:"lines", name:"Smoothed rolling mean price"},
-    {x, y: yt, type:"scatter", mode:"lines", name:"Trend (log-linear → level)"},
+    {x, y: yMean, type:"scatter", mode:"lines", name:"Mean (smoothed rolling)"},
+    {x, y: yMeanT, type:"scatter", mode:"lines", name:"Mean trend (log-linear → level)"},
+    {x, y: yMed, type:"scatter", mode:"lines", name:"Median (smoothed rolling)"},
+    {x, y: yMedT, type:"scatter", mode:"lines", name:"Median trend (log-linear → level)"},
   ], {
     margin:{l:50,r:20,t:10,b:40},
-    yaxis:{title:"Mean Price (GBP)"},
-    legend:{orientation:"h", y:-0.2},
+    yaxis:{title:"Price (GBP)"},
+    legend:{orientation:"h", y:-0.22},
     hovermode:"x unified",
     paper_bgcolor:"rgba(0,0,0,0)",
     plot_bgcolor:"rgba(0,0,0,0)"
@@ -518,12 +648,27 @@ function renderArtist(akey){
   const ymt = m.mcapTrend.map(p => p.y);
 
   Plotly.newPlot("chartMcap", [
-    {x:xm, y:ym, type:"scatter", mode:"lines", name:"Mcap proxy (price × lots)"},
-    {x:xm, y:ymt, type:"scatter", mode:"lines", name:"Mcap trend (log-linear → level)"},
+    {x:xm, y:ym, type:"scatter", mode:"lines", name:"Mcap proxy (mean×lots)"},
+    {x:xm, y:ymt, type:"scatter", mode:"lines", name:"Mcap trend"},
   ], {
     margin:{l:50,r:20,t:10,b:40},
     yaxis:{title:"Mcap Proxy"},
     legend:{orientation:"h", y:-0.25},
+    hovermode:"x unified",
+    paper_bgcolor:"rgba(0,0,0,0)",
+    plot_bgcolor:"rgba(0,0,0,0)"
+  }, {displayModeBar:false, responsive:true});
+
+  // Concentration chart (annual)
+  const xc = m.concSeries.map(d => d.year);
+  const yc = m.concSeries.map(d => d.share);
+
+  Plotly.newPlot("chartConc", [
+    {x:xc, y:yc, type:"scatter", mode:"lines+markers", name:"Top decile value share"},
+  ], {
+    margin:{l:50,r:20,t:10,b:40},
+    yaxis:{title:"Share", tickformat:".0%"},
+    xaxis:{title:"Year", dtick:1},
     hovermode:"x unified",
     paper_bgcolor:"rgba(0,0,0,0)",
     plot_bgcolor:"rgba(0,0,0,0)"
@@ -536,11 +681,13 @@ function renderRankings(which){
     if(!m.eligible) continue;
     rows.push(m);
   }
+
   const keyFn = {
-    cagr: (m) => m.cagr,
+    cagr: (m) => m.meanCagr,
     abs:  (m) => m.absDelta,
     mcap: (m) => m.mcapDelta,
-    r2:   (m) => m.r2
+    r2:   (m) => m.r2,
+    conc: (m) => m.concDelta5y
   }[which];
 
   rows.sort((a,b)=>{
@@ -556,9 +703,14 @@ function renderRankings(which){
     <tr>
       <td>${i+1}</td>
       <td><a href="#" data-k="${escapeHtml(m.akey)}">${escapeHtml(m.artistName)}</a></td>
-      <td>${fmtPct(m.cagr)}</td>
+      <td>${fmtPct(m.meanCagr)}</td>
+      <td>${fmtPct(m.medianCagr)}</td>
+      <td>${fmtPct(m.cagrDivergence)}</td>
+      <td>${Number.isFinite(m.ratioShift) ? m.ratioShift.toFixed(2) : "—"}</td>
       <td>${fmtNum(m.absDelta)}</td>
       <td>${fmtNum(m.mcapDelta)}</td>
+      <td>${fmtShare(m.concLatest)}</td>
+      <td>${fmtShare(m.concDelta5y)}</td>
       <td>${Number.isFinite(m.r2) ? m.r2.toFixed(2) : "—"}</td>
       <td>${fmtNum(m.lots24)}</td>
       <td>${fmtNum(m.lots12)}</td>
@@ -595,7 +747,7 @@ els.file.addEventListener("change", async (e)=>{
     return;
   }
 
-  buildMonthlyFromLots();
+  buildAggregates();
 
   els.artistSelect.innerHTML =
     `<option value="">Select artist…</option>` +
