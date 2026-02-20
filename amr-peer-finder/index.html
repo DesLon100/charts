@@ -13,7 +13,13 @@
       --btn:#111; --btnfg:#fff; --shadow:0 6px 18px rgba(0,0,0,.08); --radius:14px;
     }
     body{margin:0;padding:14px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:transparent;color:var(--fg);}
-    .wrap{max-width:1180px;margin:0 auto;}
+
+    /* WIDEN DASHBOARD */
+    .wrap{
+      max-width:1400px;   /* was 1180 */
+      margin:0 auto;
+    }
+
     .title{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
     .title h1{font-size:18px;margin:0;}
     .title .sub{color:var(--muted);font-size:12px;}
@@ -48,15 +54,15 @@
       overflow:auto;
     }
 
-    /* NEW: keep peer table inside its card */
+    /* Keep peer table inside its card */
     .peerCard{
       display:flex;
       flex-direction:column;
-      min-height: 620px; /* tune as desired */
+      min-height: 650px;
     }
     .peerCard .tableWrap{
       flex: 1 1 auto;
-      max-height: 520px;
+      max-height: 560px;
       overflow:auto;
     }
     .peerCard h3,
@@ -69,8 +75,8 @@
     .kpi .lab{font-size:11px;color:var(--muted);}
     .kpi .val{font-size:14px;font-weight:700;margin-top:2px;}
 
-    .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;}
-    table{border-collapse:collapse;width:100%;min-width:1100px;font-size:12px;} /* CHANGED: 1320 -> 1100 */
+    .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;max-width:100%;}
+    table{border-collapse:collapse;width:100%;min-width:1200px;font-size:12px;} /* slightly wider now */
     th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
     th{background:#fafafa;position:sticky;top:0;z-index:1;}
     tr:hover td{background:#fbfbff;}
@@ -154,7 +160,6 @@
         <div class="note">Lightweight check only. Peer matching is driven by KPIs + filters.</div>
       </div>
 
-      <!-- CHANGED: add peerCard class -->
       <div class="card peerCard">
         <h3>Peer Results</h3>
         <div class="note" id="peerNote"></div>
@@ -503,7 +508,6 @@ function computeMetrics(akey, params){
 
   const startTrend = new Date(Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth()-(trendWin-1), 1));
 
-  // Mean trend
   const x=[], y=[];
   for(const pt of smoothMean){
     if(pt.x < startTrend) continue;
@@ -523,7 +527,6 @@ function computeMetrics(akey, params){
     absDelta  = meanEnd - meanStart;
   }
 
-  // Median trend
   const xm=[], ym=[];
   for(const pt of smoothMedian){
     if(pt.x < startTrend) continue;
@@ -548,7 +551,6 @@ function computeMetrics(akey, params){
     ratioShift = (meanEnd/medianEnd) - (meanStart/medianStart);
   }
 
-  // Mcap delta
   const xk=[], yk=[];
   for(const pt of mcap){
     if(pt.x < startTrend) continue;
@@ -565,7 +567,6 @@ function computeMetrics(akey, params){
     mcapDelta = m1 - m0;
   }
 
-  // Concentration annual in window
   const startYear = startTrend.getUTCFullYear();
   const endYear = lastDate.getUTCFullYear();
   const annualMap = annualByArtist.get(akey) || new Map();
@@ -890,7 +891,6 @@ els.artistSelect.addEventListener("change", ()=>{
 });
 
 els.mode.addEventListener("change", ()=>{
-  // auto-toggle same regime for growth mode
   if(els.mode.value === "growth") els.sameRegime.checked = true;
 });
 
