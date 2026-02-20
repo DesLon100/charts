@@ -28,7 +28,7 @@
     .pill.ok{border-color:#cfe8d6;background:#f4fbf6;color:#1a6b3a;}
     .pill.busy{border-color:#f1d7a7;background:#fff8ea;color:#7a4a00;}
 
-    /* FIX: left column minimum width + sticky */
+    /* Left column minimum width + sticky */
     .grid{
       display:grid;
       grid-template-columns: minmax(320px, 380px) 1fr;
@@ -48,18 +48,33 @@
       overflow:auto;
     }
 
+    /* NEW: keep peer table inside its card */
+    .peerCard{
+      display:flex;
+      flex-direction:column;
+      min-height: 620px; /* tune as desired */
+    }
+    .peerCard .tableWrap{
+      flex: 1 1 auto;
+      max-height: 520px;
+      overflow:auto;
+    }
+    .peerCard h3,
+    .peerCard .note{
+      flex: 0 0 auto;
+    }
+
     .kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
     .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 10px;}
     .kpi .lab{font-size:11px;color:var(--muted);}
     .kpi .val{font-size:14px;font-weight:700;margin-top:2px;}
 
     .tableWrap{overflow:auto;border:1px solid var(--line);border-radius:var(--radius);background:#fff;}
-    table{border-collapse:collapse;width:100%;min-width:1320px;font-size:12px;}
+    table{border-collapse:collapse;width:100%;min-width:1100px;font-size:12px;} /* CHANGED: 1320 -> 1100 */
     th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;}
     th{background:#fafafa;position:sticky;top:0;z-index:1;}
     tr:hover td{background:#fbfbff;}
 
-    /* small checkbox alignment */
     .checkwrap{display:flex;align-items:center;gap:8px;padding:0 6px;height:40px;border:1px solid var(--line);border-radius:12px;background:#fff;}
     .checkwrap label{font-size:12px;color:var(--muted);cursor:pointer;}
     .checkwrap input{cursor:pointer;}
@@ -121,7 +136,6 @@
       <label class="pill">Extra smooth (months)</label>
       <input id="smoothM" type="number" value="5" min="1" step="1" />
 
-      <!-- NEW: explicit recalc + status -->
       <button id="btnRecalc" class="btn" disabled>Recalculate metrics</button>
       <button id="btnRun" class="btn" disabled>Find peers</button>
       <button id="btnExport" class="btn" disabled>Export results CSV</button>
@@ -140,7 +154,8 @@
         <div class="note">Lightweight check only. Peer matching is driven by KPIs + filters.</div>
       </div>
 
-      <div class="card">
+      <!-- CHANGED: add peerCard class -->
+      <div class="card peerCard">
         <h3>Peer Results</h3>
         <div class="note" id="peerNote"></div>
         <div style="height:8px;"></div>
@@ -651,7 +666,6 @@ function similarity(target, cand, mode, stats){
   const normDist = (usedW > 0) ? (dist / usedW) : Infinity;
   const score = Number.isFinite(normDist) ? Math.round(100 * Math.exp(-normDist)) : 0;
 
-  // Explanation
   contribs.sort((a,b)=>b.impact-a.impact);
   const biggestDiff = contribs[0]?.k;
   const byDz = contribs.slice().sort((a,b)=>a.dz-b.dz);
@@ -701,7 +715,6 @@ function runPeerSearch(){
     if(Number.isFinite(m.r2) && m.r2 < minR2) return false;
     if(Number.isFinite(m.lots24) && (m.lots24 < minLots || m.lots24 > maxLots)) return false;
 
-    // NEW: regime and CAGR gap filters (stops negative vs positive in Growth mode)
     if(requireSame){
       if(!sameSign(m.meanCagr, target.meanCagr)) return false;
     }
@@ -800,9 +813,7 @@ function renderPeerTable(target, scored){
   els.btnExport.disabled = scored.length === 0;
 }
 
-/* ============================
-   Export CSV
-============================ */
+/* Export CSV */
 function downloadCSV(filename, rows){
   const esc = (s) => `"${String(s ?? "").replace(/"/g,'""')}"`;
   const csv = rows.map(r => r.map(esc).join(",")).join("\n");
@@ -817,9 +828,7 @@ function downloadCSV(filename, rows){
   URL.revokeObjectURL(url);
 }
 
-/* ============================
-   Events
-============================ */
+/* Events */
 els.file.addEventListener("change", async (e)=>{
   const f = e.target.files && e.target.files[0];
   if(!f) return;
@@ -848,10 +857,7 @@ els.file.addEventListener("change", async (e)=>{
   els.btnRecalc.disabled = false;
   els.btnRun.disabled = false;
 
-  // default to first artist
   els.artistSelect.value = artists[0];
-
-  // default: same regime ON in growth mode; OFF otherwise
   els.sameRegime.checked = (els.mode.value === "growth");
 
   await withBusy(async ()=>{
@@ -864,7 +870,6 @@ els.btnRecalc.addEventListener("click", ()=>{
   if(!artists.length) return;
   withBusy(async ()=>{
     recalcAll();
-    // keep existing results until user presses Find peers, BUT update target summary/chart
     const t = metricsByArtist.get(els.artistSelect.value);
     if(t) renderTarget(t);
     lastPeerResults = [];
@@ -876,22 +881,17 @@ els.btnRecalc.addEventListener("click", ()=>{
 
 els.btnRun.addEventListener("click", ()=>{
   if(!artists.length) return;
-  withBusy(async ()=>{
-    runPeerSearch();
-  });
+  withBusy(async ()=>{ runPeerSearch(); });
 });
 
 els.artistSelect.addEventListener("change", ()=>{
   if(!artists.length) return;
-  // target change should not force recalc; just rerun with existing metrics
-  withBusy(async ()=>{
-    runPeerSearch();
-  });
+  withBusy(async ()=>{ runPeerSearch(); });
 });
 
 els.mode.addEventListener("change", ()=>{
   // auto-toggle same regime for growth mode
-  els.sameRegime.checked = (els.mode.value === "growth") ? true : els.sameRegime.checked;
+  if(els.mode.value === "growth") els.sameRegime.checked = true;
 });
 
 els.btnExport.addEventListener("click", ()=>{
